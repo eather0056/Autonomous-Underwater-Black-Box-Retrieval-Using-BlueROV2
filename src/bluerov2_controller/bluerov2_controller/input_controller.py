@@ -21,8 +21,8 @@ class Controller(Node):
         self.declare_parameter("pwm_lights_min", 1100)
         self.declare_parameter("gain_pwm_cam", 400)     
         self.declare_parameter("gain_pwm_lights", 50)
-        self.declare_parameter("gain_depth", 0.2)
-        self.declare_parameter("arm_status", True)
+        self.declare_parameter("gain_depth", 0.1)
+        self.declare_parameter("arm_status", False)
         self.declare_parameter("debug", True)
 
         self.pwm_min                = self.get_parameter("pwm_min").value 

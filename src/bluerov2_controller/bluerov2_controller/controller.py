@@ -18,7 +18,7 @@ class Controller(Node):
         self.base_mode          = mavlink.MAV_MODE_PREFLIGHT        # System is not ready to dive, booting, calibrating, etc. No flag is set.
         self.custom_mode        = 0                                 # The new autopilot-specific mode. This field can be ignored by an autopilot.
         self.mavlink_version    = 0                                 # MAVLink version, not writable by user, gets added by protocol because of magic data type: uint8_t_mavlink_version.
-        self.heartbeat_period   = 0.02                              # Interval in s, in which a heartbeat message is to be sent.
+        self.heartbeat_period   = 0.05                              # Interval in s, in which a heartbeat message is to be sent.
 
         self.pitch              = 1500                              # The pitch channel (RC1) refers to the upward or downward tilt of the BlueRov2 HEAVY.            
         self.roll               = 1500                              # The roll channel (RC2) is responsible for the horizontal rotation of the BlueRov2 nose around its longitudinal axis.
@@ -52,8 +52,8 @@ class Controller(Node):
         self.bar30_pub          = self.create_publisher(Bar30, "/bluerov2/bar30", 10)             
         
         # Setup connection parameters
-        self.declare_parameter("ip", "0.0.0.0") 
-        self.declare_parameter("port", 14550)
+        self.declare_parameter("ip", "192.168.2.1") 
+        self.declare_parameter("port", 14555)
         self.declare_parameter("baudrate", 115200)         
 
         self.bluerov_ip         = self.get_parameter("ip").value
