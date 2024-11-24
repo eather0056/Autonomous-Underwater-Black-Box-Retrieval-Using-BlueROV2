@@ -1,0 +1,10 @@
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [906.68996421, 0, 287.22730971, 0, 908.66939857, 251.65106601, 0, 0, 1]
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [4.53103517e-01, -7.19460195e+00, 2.01285292e-03, 5.84182242e-04, 7.29508626e+01]
+image_width: 640
+image_height: 480
