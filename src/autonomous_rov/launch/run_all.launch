@@ -1,7 +1,7 @@
 <launch>		
 	<group> 
 		<arg name="namespace" default="bluerov2"/>
-		<arg name="fcu_url" default="udp://192.168.2.1:14550@" />
+		<arg name="fcu_url" default="udp://192.168.2.1:14555@" />
 		<arg name="gcs_url" default="" />
 		<arg name="tgt_system" default="1" />
 		<arg name="tgt_component" default="1" />

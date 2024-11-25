@@ -28,7 +28,7 @@ class Controller(Node):
         self.lateral            = 1500                              # The lateral channel (RC6) concerns the lateral movement of the BlueRov2.
         self.camera_pan         = 1500                              # The Camera Pan channel (RC7) controls the horizontal panning movement of the camera.
         self.camera_tilt        = 1500                              # The Camera Tilt channel (RC8) controls the vertical tilt movement of the camera.
-        self.lights             = 1100                              # The Lights Level channel (RC9) controls the intensity or brightness of the light source.
+        self.lights             = 1500                              # The Lights Level channel (RC9) controls the intensity or brightness of the light source.
 
         self.data               = {}                                # Dictionary that stores all sensor data
         

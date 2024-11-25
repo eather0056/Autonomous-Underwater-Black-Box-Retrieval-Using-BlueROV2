@@ -5,7 +5,6 @@ from pymavlink import mavutil
 import pymavlink.dialects.v20.ardupilotmega as mavlink
 import pygame
 from pygame.locals import *
-
 from std_msgs.msg import UInt16, Bool
 from sensor_msgs.msg import BatteryState
 from bluerov2_interfaces.msg import Attitude, Bar30
@@ -98,27 +97,40 @@ class ManualController(Node):
         self.connection.motors_disarmed_wait()
         self.get_logger().info("Thrusters disarmed!")
 
-    def send_bluerov_commands(self):
-        # Send heartbeat
-        self.connection.mav.heartbeat_send(
-            self.type, self.autopilot, self.base_mode, self.custom_mode, self.mavlink_version
-        )
+    def mapValueScalSat(self, value):
+        # Scale joystick input (-1 to 1) to PWM range (1100-1900) with neutral at 1500
+        pulse_width = value * 400 + 1500
+        # Saturate values within range
+        pulse_width = min(max(pulse_width, 1100), 1900)
+        return int(pulse_width)
 
-        # Send RC channel values
+    def setOverrideRCIN(self, pitch, roll, throttle, yaw, forward, lateral):
+        # Map thruster control values to RC channels
         rc_channel_values = (
-            self.pitch,
-            self.roll,
-            self.throttle,
-            self.yaw,
-            self.forward,
-            self.lateral,
-            self.camera_pan,
-            self.camera_tilt,
-            self.lights,
-            self.gripper,
-            65535, 65535, 65535, 65535, 65535, 65535, 65535,
+            self.mapValueScalSat(pitch),
+            self.mapValueScalSat(roll),
+            self.mapValueScalSat(throttle),
+            self.mapValueScalSat(yaw),
+            self.mapValueScalSat(forward),
+            self.mapValueScalSat(lateral),
+            1500,  # Camera pan (neutral)
+            1500,  # Camera tilt (neutral)
+            self.lights,  # Lights control
+            self.gripper,  # Gripper control
+            65535, 65535, 65535, 65535, 65535, 65535  # Unused channels
         )
         self.mav.rc_channels_override_send(*self.target, *rc_channel_values)
+
+    def send_bluerov_commands(self):
+        # Example inputs (replace with actual joystick/sensor inputs)
+        pitch = (self.pitch - 1500) / 400.0
+        roll = (self.roll - 1500) / 400.0
+        throttle = (self.throttle - 1500) / 400.0
+        yaw = (self.yaw - 1500) / 400.0
+        forward = (self.forward - 1500) / 400.0
+        lateral = (self.lateral - 1500) / 400.0
+
+        self.setOverrideRCIN(pitch, roll, throttle, yaw, forward, lateral)
 
     def update_inputs(self):
         for event in pygame.event.get():
@@ -129,7 +141,7 @@ class ManualController(Node):
 
     def handle_joystick_motion(self, event):
         value = event.value
-        pwm_value = self.calculate_pwm(value)
+        pwm_value = self.mapValueScalSat(value)
 
         if event.axis == 0:  # Left joystick horizontal (roll)
             self.roll = pwm_value
@@ -152,14 +164,11 @@ class ManualController(Node):
         elif event.button == 7:  # Start button: Toggle arm/disarm
             self.disarm() if self.connection.motors_armed() else self.arm()
 
-    def calculate_pwm(self, value):
-        # Map joystick axis value (-1 to 1) to PWM range (1100 to 1900)
-        return int(1500 + value * 400)
-
     def shutdown(self):
         self.disarm()
         self.connection.close()
         self.get_logger().info("Controller shut down.")
+
 
 def main(args=None):
     rclpy.init(args=args)
