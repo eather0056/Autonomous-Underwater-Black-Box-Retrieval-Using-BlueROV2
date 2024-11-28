@@ -8,7 +8,7 @@ import json
 
 from sensor_msgs.msg import BatteryState
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import CompressedImage, CameraInfo
 from std_msgs.msg import String
 from bluerov2_interfaces.msg import Bar30
 from bluerov2_interfaces.msg import Attitude
@@ -16,121 +16,91 @@ from bluerov2_interfaces.msg import Attitude
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst
 
+
 class Controller(Node):
-    """BlueRov video capture class constructor
-
-    Attributes:
-        port (int): Video UDP port
-        video_codec (string): Source h264 parser
-        video_decode (string): Transform YUV (12bits) to BGR (24bits)
-        video_pipe (object): GStreamer top-level pipeline
-        video_sink (object): Gstreamer sink element
-        video_sink_conf (string): Sink configuration
-        video_source (string): Udp source ip and port
-    """
-
-    g   = 9.81      # m.s^-2 gravitational acceleration 
-    p0  = 103425    # Surface pressure in Pascal
-    rho = 1000      # kg/m^3  water density
+    g = 9.81  # m.s^-2 gravitational acceleration
+    p0 = 103425  # Surface pressure in Pascal
+    rho = 1000  # kg/m^3 water density
 
     def __init__(self):
         super().__init__("video")
 
-        self.declare_parameter("port", 5600) 
+        self.declare_parameter("port", 5600)
 
-        self.port               = self.get_parameter("port").value
-        self._frame             = None
-        self.video_source       = 'udpsrc port={}'.format(self.port)
-        self.video_codec        = '! application/x-rtp, payload=96 ! rtph264depay ! h264parse ! avdec_h264'
-        self.video_decode       = '! decodebin ! videoconvert ! video/x-raw,format=(string)BGR ! videoconvert'
-        self.video_sink_conf    = '! appsink emit-signals=true sync=false max-buffers=2 drop=true'
+        self.port = self.get_parameter("port").value
+        self._frame = None
+        self.video_source = 'udpsrc port={}'.format(self.port)
+        self.video_codec = '! application/x-rtp, payload=96 ! rtph264depay ! h264parse ! avdec_h264'
+        self.video_decode = '! decodebin ! videoconvert ! video/x-raw,format=(string)BGR ! videoconvert'
+        self.video_sink_conf = '! appsink emit-signals=true sync=false max-buffers=2 drop=true'
 
-        self.video_pipe         = None
-        self.video_sink         = None
+        self.video_pipe = None
+        self.video_sink = None
 
-        self.voltage            = 0.0
-        self.depth              = 0.0
-        self.depth_desired      = 0.0
-        self.pitch              = 0.0
-        self.yaw                = 0.0
-        self.roll               = 0.0
+        self.voltage = 0.0
+        self.depth = 0.0
+        self.depth_desired = 0.0
+        self.pitch = 0.0
+        self.yaw = 0.0
+        self.roll = 0.0
 
-        # font
-        self.font               = cv2.FONT_HERSHEY_PLAIN
-        # Initialize CvBridge and publisher
+        # Font for overlay
+        self.font = cv2.FONT_HERSHEY_PLAIN
+
+        # Initialize CvBridge and publishers
         self.bridge = CvBridge()
-        self.publisher_ = self.create_publisher(Image, 'camera/image_raw', 10) 
-        
-        # create subscriber
-        self.battery_sub        = self.create_subscription(BatteryState, "/bluerov2/battery", self.battery_callback, 10) 
-        self.depth_desired_sub  = self.create_subscription(String, "/settings/depth/status", self.depth_desired_callback, 10)  
-        self.bar30_sub          = self.create_subscription(Bar30, "/bluerov2/bar30", self.callback_bar30, 10)    
-        self.attitude_sub       = self.create_subscription(Attitude, "/bluerov2/attitude", self.callback_att, 10) 
+        self.publisher_image = self.create_publisher(CompressedImage, 'camera/image_raw/compressed', 10)
+        self.publisher_cam_info = self.create_publisher(CameraInfo, 'camera/camera_info', 10)
 
-                # Calibration data (replace these values with your calibration results)
-        D = [-0.10952433259972351, 0.3862803428371749, 0.0015459315080663999, 0.004393019281588186, 0.0]
-        K = [945.2379014862047, 0.0, 662.113558072693, 
-             0.0, 709.4714573249369, 382.44156587854303, 
-             0.0, 0.0, 1.0]
-        R = [1.0, 0.0, 0.0, 
-             0.0, 1.0, 0.0, 
-             0.0, 0.0, 1.0]
-        P = [1027.5584273912864, 0.0, 661.94259315316, 0.0, 
-             0.0, 769.7700233531776, 380.74074374936134, 0.0, 
-             0.0, 0.0, 1.0, 0.0]
+        # Create subscribers
+        self.battery_sub = self.create_subscription(BatteryState, "/bluerov2/battery", self.battery_callback, 10)
+        self.depth_desired_sub = self.create_subscription(String, "/settings/depth/status", self.depth_desired_callback, 10)
+        self.bar30_sub = self.create_subscription(Bar30, "/bluerov2/bar30", self.callback_bar30, 10)
+        self.attitude_sub = self.create_subscription(Attitude, "/bluerov2/attitude", self.callback_att, 10)
 
-        # Camera resolution
-        image_width = 1280
-        image_height = 720
-
-        # Convert calibration data to numpy arrays
-        self.camera_matrix = np.array(K).reshape((3, 3))
-        self.distortion_coefficients = np.array(D)
-        self.rectification_matrix = np.array(R).reshape((3, 3))
-        self.projection_matrix = np.array(P).reshape((3, 4))
+        # Calibration data
+        self.image_width = 1280
+        self.image_height = 720
+        self.camera_matrix = np.array([
+            [703.001903, 0.000000, 624.045812],
+            [0.000000, 701.450630, 310.068328],
+            [0.000000, 0.000000, 1.000000]
+        ])
+        self.distortion_coefficients = np.array([0.063449, -0.026851, -0.010607, 0.012980, 0.000000])
+        self.rectification_matrix = np.array([
+            [1.000000, 0.000000, 0.000000],
+            [0.000000, 1.000000, 0.000000],
+            [0.000000, 0.000000, 1.000000]
+        ])
+        self.projection_matrix = np.array([
+            [733.242310, 0.000000, 645.635994, 0.000000],
+            [0.000000, 738.102722, 299.231777, 0.000000],
+            [0.000000, 0.000000, 1.000000, 0.000000]
+        ])
 
         # Populate CameraInfo message
         self.camera_info_msg = CameraInfo()
-        self.camera_info_msg.width = image_width
-        self.camera_info_msg.height = image_height
+        self.camera_info_msg.width = self.image_width
+        self.camera_info_msg.height = self.image_height
         self.camera_info_msg.k = self.camera_matrix.flatten().tolist()
         self.camera_info_msg.d = self.distortion_coefficients.tolist()
         self.camera_info_msg.r = self.rectification_matrix.flatten().tolist()
         self.camera_info_msg.p = self.projection_matrix.flatten().tolist()
-        self.camera_info_msg.distortion_model = 'plumb_bob'  # Common distortion model
+        self.camera_info_msg.distortion_model = 'plumb_bob'
 
-        # Create publisher
-        self.publisher_cam_info = self.create_publisher(CameraInfo, 'camera/camera_info', 10)
-
-        Gst.init() 
-
-
+        Gst.init()
         self.run()
 
         # Start update loop
-        self.create_timer(0.01, self.update)    
+        self.create_timer(0.01, self.update)
 
     def start_gst(self, config=None):
-        """ Start gstreamer pipeline and sink
-        Pipeline description list e.g:
-            [
-                'videotestsrc ! decodebin', \
+        if not config:
+            config = [
+                'videotestsrc ! decodebin',
                 '! videoconvert ! video/x-raw,format=(string)BGR ! videoconvert',
                 '! appsink'
             ]
-
-        Args:
-            config (list, optional): Gstreamer pileline description list
-        """
-
-        if not config:
-            config = \
-                [
-                    'videotestsrc ! decodebin',
-                    '! videoconvert ! video/x-raw,format=(string)BGR ! videoconvert',
-                    '! appsink'
-                ]
-
         command = ' '.join(config)
         self.video_pipe = Gst.parse_launch(command)
         self.video_pipe.set_state(Gst.State.PLAYING)
@@ -138,14 +108,6 @@ class Controller(Node):
 
     @staticmethod
     def gst_to_opencv(sample):
-        """Transform byte array into np array
-
-        Args:
-            sample (TYPE): Description
-
-        Returns:
-            TYPE: Description
-        """
         buf = sample.get_buffer()
         caps = sample.get_caps()
         array = np.ndarray(
@@ -158,42 +120,26 @@ class Controller(Node):
         return array
 
     def frame(self):
-        """ Get Frame
-
-        Returns:
-            iterable: bool and image frame, cap.read() output
-        """
         return self._frame
 
     def frame_available(self):
-        """Check if frame is available
-
-        Returns:
-            bool: true if frame is available
-        """
         return type(self._frame) != type(None)
 
     def run(self):
-        """ Get frame to update _frame
-        """
-
-        self.start_gst(
-            [
-                self.video_source,
-                self.video_codec,
-                self.video_decode,
-                self.video_sink_conf
-            ])
-
+        self.start_gst([
+            self.video_source,
+            self.video_codec,
+            self.video_decode,
+            self.video_sink_conf
+        ])
         self.video_sink.connect('new-sample', self.callback)
 
     def callback(self, sink):
         sample = sink.emit('pull-sample')
         new_frame = self.gst_to_opencv(sample)
         self._frame = new_frame
-
         return Gst.FlowReturn.OK
-    
+
     def battery_callback(self, msg):
         self.voltage = round(msg.voltage, 2)
 
@@ -202,39 +148,31 @@ class Controller(Node):
         self.depth_desired = abs(data['depth_desired'])
 
     def callback_bar30(self, msg):
-        self.bar30_data = [ msg.time_boot_ms,
-                            msg.press_abs,
-                            msg.press_diff,
-                            msg.temperature ]
-        
-        
-        self.depth = round((self.bar30_data[1]*100-self.p0)/(self.rho*self.g), 2)
+        self.depth = round((msg.press_abs * 100 - self.p0) / (self.rho * self.g), 2)
 
-    def callback_att(self, msg):         
-        self.roll   = round(msg.roll, 3)
-        self.pitch  = round(msg.pitch, 3)
-        self.yaw    = round(msg.yaw, 3)
+    def callback_att(self, msg):
+        self.roll = round(msg.roll, 3)
+        self.pitch = round(msg.pitch, 3)
+        self.yaw = round(msg.yaw, 3)
 
     def update(self):
-        """Update method called periodically."""
         if not self.frame_available():
             return
 
         frame = self.frame()
-        width = int(1920 / 1.5)
-        height = int(1080 / 1.5)
-        dim = (width, height)
-        img = cv2.resize(frame, dim, interpolation=cv2.INTER_AREA)
+        img = cv2.resize(frame, (self.image_width, self.image_height), interpolation=cv2.INTER_AREA)
 
-        self.draw_gui(img, width, height)
+        self.draw_gui(img)
 
-        # Convert OpenCV image to ROS 2 image message
-        image_message = self.bridge.cv2_to_imgmsg(img, encoding='bgr8')
+        # Convert OpenCV image to ROS 2 compressed image message
+        compressed_image = CompressedImage()
+        compressed_image.header.stamp = self.get_clock().now().to_msg()
+        compressed_image.header.frame_id = "camera_frame"
+        compressed_image.format = "jpeg"
+        compressed_image.data = cv2.imencode('.jpg', img)[1].tobytes()
 
-        # Publish the image message
-        self.publisher_.publish(image_message)
-        
-        # Publish CameraInfo message
+        # Publish the image and CameraInfo messages
+        self.publisher_image.publish(compressed_image)
         self.publisher_cam_info.publish(self.camera_info_msg)
 
         # Optionally display the image using OpenCV
@@ -242,31 +180,24 @@ class Controller(Node):
         if cv2.waitKey(1) & 0xFF == ord('q'):
             self.destroy_node()
 
-    def draw_gui(self, img, width, height):        
-        img = cv2.rectangle(img,(0, height-100),(520,height),(0,0,0),-1)
-        
-        img = cv2.putText(img, 'Voltage:', (10, height-70), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
-        img = cv2.putText(img, 'Depth:', (10, height-45), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
-        img = cv2.putText(img, 'Target depth:', (10, height-20), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
+    def draw_gui(self, img):
+        height = img.shape[0]
+        img = cv2.rectangle(img, (0, height - 100), (520, height), (0, 0, 0), -1)
+        img = cv2.putText(img, f'Voltage: {self.voltage}V', (10, height - 70), self.font, 1.6, (255, 255, 255), 1)
+        img = cv2.putText(img, f'Depth: {self.depth}m', (10, height - 45), self.font, 1.6, (255, 255, 255), 1)
+        img = cv2.putText(img, f'Target Depth: {self.depth_desired}m', (10, height - 20), self.font, 1.6, (255, 255, 255), 1)
+        img = cv2.putText(img, f'Pitch: {self.pitch}', (320, height - 70), self.font, 1.6, (255, 255, 255), 1)
+        img = cv2.putText(img, f'Roll: {self.roll}', (320, height - 45), self.font, 1.6, (255, 255, 255), 1)
+        img = cv2.putText(img, f'Yaw: {self.yaw}', (320, height - 20), self.font, 1.6, (255, 255, 255), 1)
 
-        img = cv2.putText(img, f'{self.voltage}V', (205, height-70), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
-        img = cv2.putText(img, f'{self.depth}m', (205, height-45), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
-        img = cv2.putText(img, f'{self.depth_desired}m', (205, height-20), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
-
-        img = cv2.putText(img, 'Pitch:', (320, height-70), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
-        img = cv2.putText(img, 'Roll:', (320, height-45), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
-        img = cv2.putText(img, 'Yaw:', (320, height-20), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
-
-        img = cv2.putText(img, f'{self.pitch}', (430, height-70), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
-        img = cv2.putText(img, f'{self.roll}', (430, height-45), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
-        img = cv2.putText(img, f'{self.yaw}', (430, height-20), self.font, 1.6, (255, 255, 250), 1, cv2.LINE_AA)
 
 def main(args=None):
-    rclpy.init(args=args)    
+    rclpy.init(args=args)
     node = Controller()
-    rclpy.spin(node)        
+    rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

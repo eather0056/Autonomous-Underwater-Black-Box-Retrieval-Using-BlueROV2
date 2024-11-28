@@ -28,7 +28,9 @@ setup(
             'marker_detection_simulation = bluerov_grasp.marker_detection_simulation:main',
             'marker_detection_simulation_4_10 = bluerov_grasp.marker_detection_simulation_4_10:main',
             'aruco_detection_node = bluerov_grasp.aruco_detection_node:main', 
-            'aruco_follower = bluerov_grasp.aruco_follower:main'
+            'aruco_follower = bluerov_grasp.aruco_follower:main',
+            'bluerov_aruco_detection = bluerov_grasp.bluerov_aruco_detection:main', 
+            'laptopcamera = bluerov_grasp.laptopcamera:main',
         ],
     },
 )

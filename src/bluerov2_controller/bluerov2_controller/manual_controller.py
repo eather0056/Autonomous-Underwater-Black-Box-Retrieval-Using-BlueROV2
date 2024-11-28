@@ -111,7 +111,7 @@ class ManualController(Node):
 
     def map_value_scal_sat(self, value):
         # Scale joystick input (-1 to 1) to PWM range (1100-1900) with neutral at 1500
-        pulse_width = value * 300 + 1500
+        pulse_width = value * 100 + 1500
         return int(min(max(pulse_width, 1100), 1900))
 
     def set_override_rcin(self):
