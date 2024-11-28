@@ -5,16 +5,34 @@ from rclpy.node import Node
 from pymavlink import mavutil
 import pymavlink.dialects.v20.ardupilotmega as mavlink
 from sensor_msgs.msg import PoseStamped
+from bluerov2_interfaces.msg import Bar30
 import pygame
 from pygame.locals import *
 
 
 class BlueROV2Controller(Node):
     def __init__(self):
-        super().__init__('manual_and_follower_aruco')
+        super().__init__('manual_follower_depth_aruco')
 
         # Modes
         self.manual_mode = True  # Start in manual mode
+        self.depth_hold_enabled = False  # Depth hold is initially off
+
+        # Depth hold parameters
+        self.target_depth = 0.0
+        self.g = 9.81
+        self.p0 = 103425  # Surface pressure in Pascal
+        self.rho = 1000  # Water density
+        self.depth_neutral_pwm = 1500
+        self.depth_max_pwm = 1900
+        self.depth_min_pwm = 1100
+        self.KP = 600
+        self.KI = 100
+        self.KD = 50
+        self.depth_integral = 0.0
+        self.previous_depth = 0.0
+        self.previous_time = 0.0
+        self.current_bar30_pressure = self.p0
 
         # Parameters for autonomous mode
         self.target_distance = 0.8
@@ -35,6 +53,12 @@ class BlueROV2Controller(Node):
             PoseStamped,
             '/aruco_pose',
             self.pose_callback,
+            10
+        )
+        self.bar30_sub = self.create_subscription(
+            Bar30,
+            '/bluerov2/bar30',
+            self.bar30_callback,
             10
         )
 
@@ -88,8 +112,17 @@ class BlueROV2Controller(Node):
             self.joysticks.append(joystick)
             self.get_logger().info(f"Joystick detected: {joystick.get_name()}")
 
-        # Initialize joystick values for manual control
-        self.rc_channels = [1500] * 8
+        # Initialize RC channel values
+        self.rc_channels = [
+            1500,  # RC1: Gripper
+            1500,  # RC2: Unused
+            1500,  # RC3: Throttle
+            1500,  # RC4: Camera tilt
+            1500,  # RC5: Forward/Backward
+            1500,  # RC6: Left/Right
+            1500,  # RC7: Lights
+            1500   # RC8: Yaw
+        ]
 
     def map_to_pwm(self, value):
         pwm = int(self.default_pwm + value * self.speed_scaling)
@@ -98,6 +131,8 @@ class BlueROV2Controller(Node):
     def send_mavlink_commands(self):
         if self.manual_mode:
             self.set_manual_rc_override()
+        elif self.depth_hold_enabled:
+            self.set_depth_hold_rc_override()
         else:
             self.set_autonomous_rc_override()
 
@@ -116,13 +151,13 @@ class BlueROV2Controller(Node):
         value = event.value
         pwm_value = self.map_to_pwm(value)
 
-        if event.axis == 0:  # Left joystick horizontal (lateral movement)
+        if event.axis == 0:  # Left joystick horizontal (lateral movement - RC6)
             self.rc_channels[5] = pwm_value
-        elif event.axis == 1:  # Left joystick vertical (forward/backward, REVERSED)
+        elif event.axis == 1:  # Left joystick vertical (forward/backward - RC5, REVERSED)
             self.rc_channels[4] = self.map_to_pwm(-value)
-        elif event.axis == 2:  # Right joystick horizontal (yaw)
+        elif event.axis == 2:  # Right joystick horizontal (yaw - RC8)
             self.rc_channels[7] = pwm_value
-        elif event.axis == 3:  # Left trigger (throttle)
+        elif event.axis == 3:  # Left trigger (throttle - RC3)
             self.rc_channels[2] = pwm_value
 
     def handle_button_press(self, event):
@@ -130,54 +165,76 @@ class BlueROV2Controller(Node):
             self.rc_channels[0] = 1900
         elif event.button == 1:  # Button B: Open gripper
             self.rc_channels[0] = 1100
-        elif event.button == 7:  # Start button: Toggle arm/disarm or switch mode
-            if self.manual_mode:
-                self.manual_mode = False
-                self.get_logger().info("Switched to Autonomous Mode.")
-            else:
-                self.manual_mode = True
-                self.get_logger().info("Switched to Manual Mode.")
         elif event.button == 6:  # Back button: Arm/disarm
             if self.connection.motors_armed():
                 self.disarm()
             else:
                 self.arm()
+        elif event.button == 7:  # Start button: Toggle depth hold
+            self.depth_hold_enabled = not self.depth_hold_enabled
+            mode = "enabled" if self.depth_hold_enabled else "disabled"
+            self.get_logger().info(f"Depth hold {mode}.")
+        elif event.button == 8:  # Button for mode toggle
+            self.manual_mode = not self.manual_mode
+            mode = "Manual" if self.manual_mode else "Autonomous"
+            self.get_logger().info(f"Switched to {mode} mode.")
+
+    def set_depth_hold_rc_override(self):
+        pwm = self.calculate_depth_hold_pwm()
+        self.rc_channels[2] = pwm  # RC3: Throttle for depth hold
+        self.mav.rc_channels_override_send(*self.target, *self.rc_channels)
+
+    def calculate_depth_hold_pwm(self):
+        # PID control logic
+        current_pressure = self.current_bar30_pressure
+        depth = -(current_pressure - self.p0) / (self.rho * self.g)
+        delta_depth = depth - self.previous_depth
+        delta_time = self.get_clock().now().seconds_nanoseconds()[0] - self.previous_time
+
+        # PID terms
+        error = self.target_depth - depth
+        self.depth_integral += error * delta_time
+        derivative = delta_depth / delta_time if delta_time > 0 else 0
+
+        # PID control output
+        u = self.KP * error + self.KI * self.depth_integral - self.KD * derivative
+        pwm = self.depth_neutral_pwm + u
+
+        # Clamp PWM
+        pwm = min(max(pwm, self.depth_min_pwm), self.depth_max_pwm)
+
+        # Update previous values
+        self.previous_depth = depth
+        self.previous_time = self.get_clock().now().seconds_nanoseconds()[0]
+
+        return pwm
 
     def set_autonomous_rc_override(self):
-        rc_channels = [1500] * 8
-        rc_channels[2] = self.vertical_pwm
-        rc_channels[4] = self.forward_pwm
-        rc_channels[5] = self.lateral_pwm
-        self.mav.rc_channels_override_send(*self.target, *rc_channels)
+        self.rc_channels[4] = self.forward_pwm  # RC5: Forward/Backward
+        self.rc_channels[5] = self.lateral_pwm  # RC6: Left/Right
+        self.rc_channels[7] = self.yaw_pwm      # RC8: Yaw
+        self.mav.rc_channels_override_send(*self.target, *self.rc_channels)
 
     def pose_callback(self, msg):
-        if self.manual_mode:
-            return  # Ignore pose updates in manual mode
+        if self.manual_mode or self.depth_hold_enabled:
+            return
 
         forward_distance = msg.pose.position.z
         vertical_offset = msg.pose.position.y
         lateral_offset = msg.pose.position.x
 
-        # Compute RC commands
         self.forward_pwm = self.default_pwm
         self.lateral_pwm = self.default_pwm
         self.vertical_pwm = self.default_pwm
 
-        # Forward/backward motion
         if abs(forward_distance - self.target_distance) > self.alignment_tolerance:
             self.forward_pwm = self.map_to_pwm(forward_distance - self.target_distance)
 
-        # Lateral alignment (side-to-side)
         if abs(lateral_offset) > self.alignment_tolerance:
             self.lateral_pwm = self.map_to_pwm(-lateral_offset)
 
-        # Vertical alignment (up/down)
-        if abs(vertical_offset) > self.alignment_tolerance:
-            self.vertical_pwm = self.map_to_pwm(-vertical_offset)
-
-        self.get_logger().info(
-            f"Forward PWM: {self.forward_pwm}, Lateral PWM: {self.lateral_pwm}, Vertical PWM: {self.vertical_pwm}"
-        )
+    def bar30_callback(self, msg):
+        self.current_bar30_pressure = msg.press_abs * 100  # Convert hPa to Pa
 
     def shutdown(self):
         self.disarm()
