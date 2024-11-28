@@ -13,32 +13,41 @@ from bluerov2_interfaces.msg import Attitude, Bar30
 class ManualController(Node):
     def __init__(self):
         super().__init__("manual_controller")
+        self.initialize_mavlink_config()
+        self.initialize_rc_defaults()
+        self.initialize_ros_publishers()
+        self.initialize_mavlink_connection()
+        self.initialize_joystick()
+        self.start_heartbeat_and_input_loops()
 
+    ### Initialization Functions ###
+    def initialize_mavlink_config(self):
         # MAVLink configuration
         self.type = mavlink.MAV_TYPE_GCS
         self.autopilot = mavlink.MAV_AUTOPILOT_INVALID
         self.base_mode = mavlink.MAV_MODE_PREFLIGHT
         self.custom_mode = 0
         self.mavlink_version = 0
-        self.heartbeat_period = 0.02
+        self.heartbeat_period = 0.02  # Heartbeat every 20 ms
 
+    def initialize_rc_defaults(self):
         # RC channel default values
-        self.pitch = 1500
-        self.roll = 1500
-        self.throttle = 1500
-        self.yaw = 1500
-        self.forward = 1500
-        self.lateral = 1500
-        self.camera_pan = 1500
-        self.camera_tilt = 1500
-        self.lights = 1100
-        self.gripper = 1500  # Neutral gripper position
+        self.gripper = 1500  # RC1
+        self.pitch = 1500    # RC2 (Unused for now)
+        self.throttle = 1500  # RC3
+        self.camera_tilt = 1500  # RC4 (Interchanged with yaw)
+        self.forward = 1500  # RC5
+        self.lateral = 1500  # RC6
+        self.lights = 1500  # RC7
+        self.yaw = 1500  # RC8
 
+    def initialize_ros_publishers(self):
         # ROS publishers
         self.battery_pub = self.create_publisher(BatteryState, "/bluerov2/battery", 10)
         self.arm_pub = self.create_publisher(Bool, "/bluerov2/arm_status", 10)
 
-        # Declare parameters for MAVLink connection
+    def initialize_mavlink_connection(self):
+        # Setup connection parameters
         self.declare_parameter("ip", "192.168.2.1")
         self.declare_parameter("port", 14555)
         self.declare_parameter("baudrate", 115200)
@@ -55,6 +64,7 @@ class ManualController(Node):
         self.connection.wait_heartbeat()
         self.get_logger().info("BlueROV2 connection established.")
 
+        # MAVLink convenience variables
         self.mav = self.connection.mav
         self.target = (self.connection.target_system, self.connection.target_component)
 
@@ -68,23 +78,25 @@ class ManualController(Node):
             1,
         )
 
+        # Arm the vehicle
+        self.arm()
+
+    def initialize_joystick(self):
         # Initialize joystick
         pygame.init()
         self.joysticks = []
         for i in range(pygame.joystick.get_count()):
-            self.joysticks.append(pygame.joystick.Joystick(i))
-            self.joysticks[-1].init()
-            self.get_logger().info(f"Joystick detected: {self.joysticks[-1].get_name()}")
+            joystick = pygame.joystick.Joystick(i)
+            joystick.init()
+            self.joysticks.append(joystick)
+            self.get_logger().info(f"Joystick detected: {joystick.get_name()}")
 
-        # Arm the vehicle
-        self.arm()
-
-        # Start manual control loop
+    def start_heartbeat_and_input_loops(self):
+        # Start input and heartbeat loops
         self.create_timer(0.04, self.update_inputs)
-
-        # Start heartbeat loop
         self.create_timer(self.heartbeat_period, self.send_bluerov_commands)
 
+    ### MAVLink Command Functions ###
     def arm(self):
         self.connection.arducopter_arm()
         self.get_logger().info("Arm requested, waiting...")
@@ -97,41 +109,30 @@ class ManualController(Node):
         self.connection.motors_disarmed_wait()
         self.get_logger().info("Thrusters disarmed!")
 
-    def mapValueScalSat(self, value):
+    def map_value_scal_sat(self, value):
         # Scale joystick input (-1 to 1) to PWM range (1100-1900) with neutral at 1500
-        pulse_width = value * 400 + 1500
-        # Saturate values within range
-        pulse_width = min(max(pulse_width, 1100), 1900)
-        return int(pulse_width)
+        pulse_width = value * 300 + 1500
+        return int(min(max(pulse_width, 1100), 1900))
 
-    def setOverrideRCIN(self, pitch, roll, throttle, yaw, forward, lateral):
-        # Map thruster control values to RC channels
+    def set_override_rcin(self):
+        # Map RC channel values
         rc_channel_values = (
-            self.mapValueScalSat(pitch),
-            self.mapValueScalSat(roll),
-            self.mapValueScalSat(throttle),
-            self.mapValueScalSat(yaw),
-            self.mapValueScalSat(forward),
-            self.mapValueScalSat(lateral),
-            1500,  # Camera pan (neutral)
-            1500,  # Camera tilt (neutral)
-            self.lights,  # Lights control
-            self.gripper,  # Gripper control
-            65535, 65535, 65535, 65535, 65535, 65535  # Unused channels
+            self.gripper,      # RC1: Gripper
+            1500,              # RC2: (Unused for now)
+            self.throttle,     # RC3: Throttle
+            self.camera_tilt,  # RC4: Camera tilt
+            self.forward,      # RC5: Forward/Backward
+            self.lateral,      # RC6: Left/Right
+            self.lights,       # RC7: Lights
+            self.yaw,          # RC8: Yaw
+            65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535  # Unused channels
         )
         self.mav.rc_channels_override_send(*self.target, *rc_channel_values)
 
     def send_bluerov_commands(self):
-        # Example inputs (replace with actual joystick/sensor inputs)
-        pitch = (self.pitch - 1500) / 400.0
-        roll = (self.roll - 1500) / 400.0
-        throttle = (self.throttle - 1500) / 400.0
-        yaw = (self.yaw - 1500) / 400.0
-        forward = (self.forward - 1500) / 400.0
-        lateral = (self.lateral - 1500) / 400.0
+        self.set_override_rcin()
 
-        self.setOverrideRCIN(pitch, roll, throttle, yaw, forward, lateral)
-
+    ### Input Handling Functions ###
     def update_inputs(self):
         for event in pygame.event.get():
             if event.type == JOYAXISMOTION:
@@ -141,16 +142,18 @@ class ManualController(Node):
 
     def handle_joystick_motion(self, event):
         value = event.value
-        pwm_value = self.mapValueScalSat(value)
+        pwm_value = self.map_value_scal_sat(value)
 
-        if event.axis == 0:  # Left joystick horizontal (roll)
-            self.roll = pwm_value
-        elif event.axis == 1:  # Left joystick vertical (pitch)
-            self.pitch = pwm_value
-        elif event.axis == 2:  # Right joystick horizontal (yaw)
+        if event.axis == 0:  # Left joystick horizontal (lateral movement - RC6)
+            self.lateral = pwm_value
+        elif event.axis == 1:  # Left joystick vertical (forward/backward - RC5, REVERSED)
+            self.forward = self.map_value_scal_sat(-value)
+        elif event.axis == 2:  # Right joystick horizontal (yaw - RC8)
             self.yaw = pwm_value
-        elif event.axis == 3:  # Right joystick vertical (throttle)
+        elif event.axis == 3:  # Left trigger (throttle - RC3)
             self.throttle = pwm_value
+        elif event.axis == 4:  # Right trigger (camera tilt - RC4)
+            self.camera_tilt = pwm_value
 
     def handle_button_press(self, event):
         if event.button == 0:  # Button A: Close gripper
@@ -162,7 +165,10 @@ class ManualController(Node):
         elif event.button == 5:  # Right bumper: Increase light intensity
             self.lights = min(1900, self.lights + 100)
         elif event.button == 7:  # Start button: Toggle arm/disarm
-            self.disarm() if self.connection.motors_armed() else self.arm()
+            if self.connection.motors_armed():
+                self.disarm()
+            else:
+                self.arm()
 
     def shutdown(self):
         self.disarm()

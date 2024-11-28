@@ -7,6 +7,8 @@ import numpy as np
 import json
 
 from sensor_msgs.msg import BatteryState
+from cv_bridge import CvBridge
+from sensor_msgs.msg import Image, CameraInfo
 from std_msgs.msg import String
 from bluerov2_interfaces.msg import Bar30
 from bluerov2_interfaces.msg import Attitude
@@ -55,12 +57,50 @@ class Controller(Node):
 
         # font
         self.font               = cv2.FONT_HERSHEY_PLAIN
-
+        # Initialize CvBridge and publisher
+        self.bridge = CvBridge()
+        self.publisher_ = self.create_publisher(Image, 'camera/image_raw', 10) 
+        
         # create subscriber
         self.battery_sub        = self.create_subscription(BatteryState, "/bluerov2/battery", self.battery_callback, 10) 
         self.depth_desired_sub  = self.create_subscription(String, "/settings/depth/status", self.depth_desired_callback, 10)  
         self.bar30_sub          = self.create_subscription(Bar30, "/bluerov2/bar30", self.callback_bar30, 10)    
         self.attitude_sub       = self.create_subscription(Attitude, "/bluerov2/attitude", self.callback_att, 10) 
+
+                # Calibration data (replace these values with your calibration results)
+        D = [-0.10952433259972351, 0.3862803428371749, 0.0015459315080663999, 0.004393019281588186, 0.0]
+        K = [945.2379014862047, 0.0, 662.113558072693, 
+             0.0, 709.4714573249369, 382.44156587854303, 
+             0.0, 0.0, 1.0]
+        R = [1.0, 0.0, 0.0, 
+             0.0, 1.0, 0.0, 
+             0.0, 0.0, 1.0]
+        P = [1027.5584273912864, 0.0, 661.94259315316, 0.0, 
+             0.0, 769.7700233531776, 380.74074374936134, 0.0, 
+             0.0, 0.0, 1.0, 0.0]
+
+        # Camera resolution
+        image_width = 1280
+        image_height = 720
+
+        # Convert calibration data to numpy arrays
+        self.camera_matrix = np.array(K).reshape((3, 3))
+        self.distortion_coefficients = np.array(D)
+        self.rectification_matrix = np.array(R).reshape((3, 3))
+        self.projection_matrix = np.array(P).reshape((3, 4))
+
+        # Populate CameraInfo message
+        self.camera_info_msg = CameraInfo()
+        self.camera_info_msg.width = image_width
+        self.camera_info_msg.height = image_height
+        self.camera_info_msg.k = self.camera_matrix.flatten().tolist()
+        self.camera_info_msg.d = self.distortion_coefficients.tolist()
+        self.camera_info_msg.r = self.rectification_matrix.flatten().tolist()
+        self.camera_info_msg.p = self.projection_matrix.flatten().tolist()
+        self.camera_info_msg.distortion_model = 'plumb_bob'  # Common distortion model
+
+        # Create publisher
+        self.publisher_cam_info = self.create_publisher(CameraInfo, 'camera/camera_info', 10)
 
         Gst.init() 
 
@@ -174,19 +214,30 @@ class Controller(Node):
         self.roll   = round(msg.roll, 3)
         self.pitch  = round(msg.pitch, 3)
         self.yaw    = round(msg.yaw, 3)
-    
-    def update(self):        
+
+    def update(self):
+        """Update method called periodically."""
         if not self.frame_available():
             return
 
         frame = self.frame()
-        width = int(1920/1.5)
-        height = int(1080/1.5)
+        width = int(1920 / 1.5)
+        height = int(1080 / 1.5)
         dim = (width, height)
-        img = cv2.resize(frame, dim, interpolation = cv2.INTER_AREA)   
+        img = cv2.resize(frame, dim, interpolation=cv2.INTER_AREA)
 
-        self.draw_gui(img, width, height)        
+        self.draw_gui(img, width, height)
 
+        # Convert OpenCV image to ROS 2 image message
+        image_message = self.bridge.cv2_to_imgmsg(img, encoding='bgr8')
+
+        # Publish the image message
+        self.publisher_.publish(image_message)
+        
+        # Publish CameraInfo message
+        self.publisher_cam_info.publish(self.camera_info_msg)
+
+        # Optionally display the image using OpenCV
         cv2.imshow('BlueROV2 Camera', img)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             self.destroy_node()
