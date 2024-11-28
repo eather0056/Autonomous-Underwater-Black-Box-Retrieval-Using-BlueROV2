@@ -88,7 +88,7 @@ class Controller(Node):
         self.camera_info_msg.p = self.projection_matrix.flatten().tolist()
         self.camera_info_msg.distortion_model = 'plumb_bob'
 
-        Gst.init()
+        Gst.init(None)
         self.run()
 
         # Start update loop

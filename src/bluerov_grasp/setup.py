@@ -31,7 +31,8 @@ setup(
             'aruco_follower = bluerov_grasp.aruco_follower:main',
             'bluerov_aruco_detection = bluerov_grasp.bluerov_aruco_detection:main', 
             'laptopcamera = bluerov_grasp.laptopcamera:main',
-            'bluerov2_camera_publisher = bluerov_grasp.bluerov2_camera_publisher:main'
+            'bluerov2_camera_publisher = bluerov_grasp.bluerov2_camera_publisher:main',
+            'manual_and_follower_aruco = bluerov_grasp.manual_and_follower_aruco:main'
         ],
     },
 )
