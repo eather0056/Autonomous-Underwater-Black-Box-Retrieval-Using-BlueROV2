@@ -255,3 +255,8 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
+
+# Back	Arm/Disarm: Toggles arm/disarm of the BlueROV2.
+# Start	Depth Hold: Toggles depth hold mode on/off.
+# Button 8 (Select)	Mode Toggle: Switches between Manual and Autonomous modes.
