@@ -32,7 +32,9 @@ setup(
             'bluerov_aruco_detection = bluerov_grasp.bluerov_aruco_detection:main', 
             'laptopcamera = bluerov_grasp.laptopcamera:main',
             'bluerov2_camera_publisher = bluerov_grasp.bluerov2_camera_publisher:main',
-            'manual_follower_depth_aruco = bluerov_grasp.manual_follower_depth_aruco:main'
+            'manual_follower_depth_aruco = bluerov_grasp.manual_follower_depth_aruco:main',
+            'bluerov_marker_follower = bluerov_grasp.bluerov_marker_follower:main',
+            'pressure_node = bluerov_grasp.pressure_node:main'
         ],
     },
 )
