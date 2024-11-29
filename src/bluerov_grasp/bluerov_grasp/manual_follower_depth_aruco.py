@@ -165,6 +165,18 @@ class BlueROV2Controller(Node):
             self.rc_channels[0] = 1900
         elif event.button == 1:  # Button B: Open gripper
             self.rc_channels[0] = 1100
+        elif event.button == 4:  # Left Bumper (LB): Decrease light intensity
+            self.rc_channels[6] = max(1100, self.rc_channels[6] - 100)  # RC7
+            self.get_logger().info(f"Light intensity decreased: {self.rc_channels[6]}")
+        elif event.button == 5:  # Right Bumper (RB): Increase light intensity
+            self.rc_channels[6] = min(1900, self.rc_channels[6] + 100)  # RC7
+            self.get_logger().info(f"Light intensity increased: {self.rc_channels[6]}")
+        elif event.button == 11:  # D-Pad Up: Tilt camera up
+            self.rc_channels[3] = min(1900, self.rc_channels[3] + 100)  # RC4
+            self.get_logger().info(f"Camera tilt up: {self.rc_channels[3]}")
+        elif event.button == 12:  # D-Pad Down: Tilt camera down
+            self.rc_channels[3] = max(1100, self.rc_channels[3] - 100)  # RC4
+            self.get_logger().info(f"Camera tilt down: {self.rc_channels[3]}")
         elif event.button == 6:  # Back button: Arm/disarm
             if self.connection.motors_armed():
                 self.disarm()
@@ -255,6 +267,7 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
 
 
 # Back	Arm/Disarm: Toggles arm/disarm of the BlueROV2.
