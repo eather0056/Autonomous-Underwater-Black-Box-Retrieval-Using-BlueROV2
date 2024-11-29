@@ -33,6 +33,7 @@ setup(
             'laptopcamera = bluerov_grasp.laptopcamera:main',
             'bluerov_markerfollower = bluerov_grasp.bluerov_markerfollower:main',
             'bluerov_controller = bluerov_grasp.bluerov_controller:main',
+            'manual_follower_depth_aruco = bluerov_grasp.manual_follower_depth_aruco:main',
         ],
     },
 )

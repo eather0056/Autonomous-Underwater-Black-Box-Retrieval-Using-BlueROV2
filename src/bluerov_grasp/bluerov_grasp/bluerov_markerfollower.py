@@ -111,6 +111,10 @@ class BlueROVController(Node):
             self.connection.motors_disarmed_wait()
             self.armed = False
             self.get_logger().info("Thrusters disarmed!")
+    def map_value_scal_sat(self, value):
+        # Scale joystick input (-1 to 1) to PWM range (1100-1900) with neutral at 1500
+        pulse_width = value * 100 + 1500
+        return int(min(max(pulse_width, 1100), 1900))
 
     def clamp_rc_value(self, value):
         """Clamp RC channel values to valid MAVLink range."""
@@ -152,21 +156,34 @@ class BlueROVController(Node):
             value = event.value
             pwm_value = self.clamp_rc_value(value * 100 + 1500)
 
-            if event.axis == 0:
+            if event.axis == 0:  # Left joystick horizontal (lateral movement - RC6)
                 self.lateral = pwm_value
-            elif event.axis == 1:
-                self.forward = self.clamp_rc_value(-value * 100 + 1500)
-            elif event.axis == 2:
+            elif event.axis == 1:  # Left joystick vertical (forward/backward - RC5, REVERSED)
+                self.forward = self.map_value_scal_sat(-value)
+            elif event.axis == 3:  # Right joystick horizontal (yaw - RC8)
                 self.yaw = pwm_value
-            elif event.axis == 3:
+            elif event.axis == 4:  # Left trigger (throttle - RC3)
                 self.throttle = pwm_value
+            elif event.axis == 2:  # Right trigger (camera tilt - RC4)
+                self.camera_tilt = pwm_value
 
     def handle_button_press(self, event):
+        
         if event.button == 7:
             if self.armed:
                 self.disarm()
             else:
                 self.arm()
+
+        elif event.button == 0:  # Button A: Close gripper
+            self.gripper = 1900
+        elif event.button == 1:  # Button B: Open gripper
+            self.gripper = 1100
+        elif event.button == 4:  # Left bumper: Decrease light intensity
+            self.lights = max(1100, self.lights - 100)
+        elif event.button == 5:  # Right bumper: Increase light intensity
+            self.lights = min(1900, self.lights + 100)
+
         elif event.button == 6:
             self.mode = "aruco" if self.mode == "manual" else "manual"
             self.get_logger().info(f"Switched to {self.mode} mode.")

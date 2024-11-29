@@ -201,10 +201,12 @@ class BlueROVController(Node):
                 self.lateral = pwm_value
             elif event.axis == 1:
                 self.forward = self.clamp_rc_value(-value * 100 + 1500)
-            elif event.axis == 2:
-                self.yaw = pwm_value
             elif event.axis == 3:
+                self.yaw = pwm_value
+            elif event.axis == 4:
                 self.throttle = pwm_value
+            elif event.axis == 2:  # Right trigger (camera tilt - RC4)
+                self.camera_tilt = pwm_value
 
     def handle_button_press(self, event):
         if event.button == 7:
@@ -215,6 +217,14 @@ class BlueROVController(Node):
         elif event.button == 6:
             self.mode = "aruco" if self.mode == "manual" else "manual"
             self.get_logger().info(f"Switched to {self.mode} mode.")
+        elif event.button == 0:  # Button A: Close gripper
+            self.gripper = 1900
+        elif event.button == 1:  # Button B: Open gripper
+            self.gripper = 1100
+        elif event.button == 4:  # Left bumper: Decrease light intensity
+            self.lights = max(1100, self.lights - 100)
+        elif event.button == 5:  # Right bumper: Increase light intensity
+            self.lights = min(1900, self.lights + 100)
 
     ### ArUco Mode ###
     def pose_callback(self, msg):

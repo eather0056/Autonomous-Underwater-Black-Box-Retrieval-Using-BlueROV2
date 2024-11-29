@@ -120,11 +120,11 @@ class ManualController(Node):
             self.gripper,      # RC1: Gripper
             1500,              # RC2: (Unused for now)
             self.throttle,     # RC3: Throttle
-            self.camera_tilt,  # RC4: Camera tilt
+            self.yaw,  # RC4: Camera tilt
             self.forward,      # RC5: Forward/Backward
             self.lateral,      # RC6: Left/Right
             self.lights,       # RC7: Lights
-            self.yaw,          # RC8: Yaw
+            self.camera_tilt,          # RC8: Yaw
             65535, 65535, 65535, 65535, 65535, 65535, 65535, 65535  # Unused channels
         )
         self.mav.rc_channels_override_send(*self.target, *rc_channel_values)
@@ -148,11 +148,11 @@ class ManualController(Node):
             self.lateral = pwm_value
         elif event.axis == 1:  # Left joystick vertical (forward/backward - RC5, REVERSED)
             self.forward = self.map_value_scal_sat(-value)
-        elif event.axis == 2:  # Right joystick horizontal (yaw - RC8)
+        elif event.axis == 3:  # Right joystick horizontal (yaw - RC8)
             self.yaw = pwm_value
-        elif event.axis == 3:  # Left trigger (throttle - RC3)
+        elif event.axis == 4:  # Left trigger (throttle - RC3)
             self.throttle = pwm_value
-        elif event.axis == 4:  # Right trigger (camera tilt - RC4)
+        elif event.axis == 2:  # Right trigger (camera tilt - RC4)
             self.camera_tilt = pwm_value
 
     def handle_button_press(self, event):
