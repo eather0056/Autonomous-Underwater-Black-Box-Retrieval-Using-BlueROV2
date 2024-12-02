@@ -9,6 +9,7 @@ from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import UInt16, Bool
 from sensor_msgs.msg import BatteryState
 from bluerov2_interfaces.msg import Attitude, Bar30
+import math
 
 
 class BlueROVController(Node):
@@ -48,7 +49,7 @@ class BlueROVController(Node):
         self.yaw = 1500  # RC4
         self.forward = 1500  # RC5
         self.lateral = 1500  # RC6
-        self.lights = 1500  # RC7
+        self.lights = 1100  # RC7
         self.camera_tilt = 1500  # RC8
 
     def initialize_ros_publishers(self):
@@ -164,8 +165,8 @@ class BlueROVController(Node):
                 self.yaw = pwm_value
             elif event.axis == 4:  # Left trigger (throttle - RC3)
                 self.throttle = pwm_value
-            elif event.axis == 2:  # Right trigger (camera tilt - RC4)
-                self.camera_tilt = pwm_value
+            # elif event.axis == 2:  # Right trigger (camera tilt - RC4)
+            #     self.camera_tilt = pwm_value
 
     def handle_button_press(self, event):
         
@@ -183,6 +184,12 @@ class BlueROVController(Node):
             self.lights = max(1100, self.lights - 100)
         elif event.button == 5:  # Right bumper: Increase light intensity
             self.lights = min(1900, self.lights + 100)
+        elif event.button == 2:  # Button X: Tilt camera up
+            self.camera_tilt = min(1900, self.camera_tilt + 100)  # Increase camera tilt
+            #self.get_logger().info(f"Camera Tilt Increased: {self.camera_tilt}")
+        elif event.button == 3:  # Button Y: Tilt camera down
+            self.camera_tilt = max(1100, self.camera_tilt - 100)  # Decrease camera tilt
+            #self.get_logger().info(f"Camera Tilt Decreased: {self.camera_tilt}")
 
         elif event.button == 6:
             self.mode = "aruco" if self.mode == "manual" else "manual"
@@ -193,19 +200,81 @@ class BlueROVController(Node):
         if not self.armed or self.mode != "aruco":
             return
 
-        forward_distance = msg.pose.position.z
-        lateral_offset = msg.pose.position.x
-        vertical_offset = msg.pose.position.y
+        # Extract pose data
+        forward_distance = msg.pose.position.z  # Distance from the marker
+        lateral_offset = msg.pose.position.x    # Side-to-side offset
+        vertical_offset = -msg.pose.position.y   # Vertical offset
 
-        forward = 1500 + int((1.5 - forward_distance) * 200)
-        lateral = 1500 + int(lateral_offset * 100)
-        throttle = 1500 + int(vertical_offset * 100)
+        # Yaw control parameters
+        yaw_kp = 150  # Proportional gain for yaw
+        yaw_kd = 50   # Derivative gain for yaw
+        yaw_deadband = 0.01  # Deadband for small yaw errors (in radians)
 
-        self.send_rc_override(forward, lateral, throttle, self.yaw)
+        # Calculate yaw error (using relative marker orientation to ROV)
+        target_yaw = math.atan2(lateral_offset, forward_distance)  # Angle to the marker
+        current_yaw = getattr(self, 'current_yaw', 0.0)  # Default to 0 if not set
+        yaw_error = target_yaw - current_yaw
 
+        # Normalize yaw error to the range [-π, π]
+        yaw_error = (yaw_error + math.pi) % (2 * math.pi) - math.pi
+
+        # Derivative term for yaw
+        delta_yaw_error = yaw_error - getattr(self, 'prev_yaw_error', 0.0)
+
+        # Apply deadband to reduce unnecessary adjustments
+        if abs(yaw_error) < yaw_deadband:
+            yaw = 1500
+        else:
+            yaw = 1500 + int(yaw_kp * yaw_error + yaw_kd * delta_yaw_error)
+
+        # Save current yaw and error for the next iteration
+        self.prev_yaw_error = yaw_error
+        self.current_yaw = target_yaw
+
+        # Forward control parameters
+        forward_kp = 80  # Proportional gain for forward
+        forward_kd = 20   # Derivative gain for forward
+        forward_error = forward_distance - 1.5  # Error for maintaining 1.5m distance
+        delta_forward_error = forward_error - getattr(self, 'prev_forward_error', 0.0)
+        forward = 1500 + int(forward_kp * forward_error + forward_kd * delta_forward_error)
+        self.prev_forward_error = forward_error
+
+        # Lateral control parameters
+        lateral_kp = 150  # Proportional gain for lateral
+        lateral_kd = 80   # Derivative gain for lateral
+        delta_lateral_error = lateral_offset - getattr(self, 'prev_lateral_error', 0.0)
+        lateral = 1500 + int(lateral_kp * lateral_offset + lateral_kd * delta_lateral_error)
+        self.prev_lateral_error = lateral_offset
+
+        # Vertical (throttle) control parameters
+        throttle_kp = 180  # Proportional gain for vertical
+        throttle_kd = 90   # Derivative gain for vertical
+        delta_vertical_error = vertical_offset - getattr(self, 'prev_vertical_error', 0.0)
+        throttle = 1500 + int(throttle_kp * vertical_offset + throttle_kd * delta_vertical_error)
+        self.prev_vertical_error = vertical_offset
+
+        # Clamp all RC values to the valid range
+        forward = self.clamp_rc_value(forward)
+        lateral = self.clamp_rc_value(lateral)
+        throttle = self.clamp_rc_value(throttle)
+        yaw = self.clamp_rc_value(yaw)
+
+        # Send RC override commands
+        self.send_rc_override(forward, lateral, throttle, yaw)
+
+        # Log debug information
         self.get_logger().info(
-            f"Aruco Mode: Forward={forward}, Lateral={lateral}, Throttle={throttle}"
+            f"Aruco Mode: Forward={forward}, Lateral={lateral}, Throttle={throttle}, Yaw={yaw} "
+            f"(Yaw Error={yaw_error:.2f}, Delta Yaw Error={delta_yaw_error:.2f}, Target Yaw={target_yaw:.2f}, "
+            f"Forward Error={forward_error:.2f}, Lateral Offset={lateral_offset:.2f}, Vertical Offset={vertical_offset:.2f})"
         )
+
+
+
+
+
+
+
 
     def shutdown(self):
         self.disarm()
