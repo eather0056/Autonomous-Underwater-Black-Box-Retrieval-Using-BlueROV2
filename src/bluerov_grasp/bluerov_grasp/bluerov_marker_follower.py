@@ -169,31 +169,33 @@ class BlueROVController(Node):
             #     self.camera_tilt = pwm_value
 
     def handle_button_press(self, event):
-        
         if event.button == 7:
             if self.armed:
                 self.disarm()
             else:
                 self.arm()
 
-        elif event.button == 0:  # Button A: Close gripper
-            self.gripper = 1900
-        elif event.button == 1:  # Button B: Open gripper
-            self.gripper = 1100
+        elif event.button == 0:  # Button A: Toggle gripper
+            if self.gripper == 1500 or self.gripper == 1100:  # Assume default or open state
+                self.gripper = 1900  # Close gripper
+                self.get_logger().info("Gripper Closed")
+            else:
+                self.gripper = 1100  # Open gripper
+                self.get_logger().info("Gripper Opened")
+
         elif event.button == 4:  # Left bumper: Decrease light intensity
             self.lights = max(1100, self.lights - 100)
         elif event.button == 5:  # Right bumper: Increase light intensity
             self.lights = min(1900, self.lights + 100)
         elif event.button == 2:  # Button X: Tilt camera up
             self.camera_tilt = min(1900, self.camera_tilt + 100)  # Increase camera tilt
-            #self.get_logger().info(f"Camera Tilt Increased: {self.camera_tilt}")
         elif event.button == 3:  # Button Y: Tilt camera down
             self.camera_tilt = max(1100, self.camera_tilt - 100)  # Decrease camera tilt
-            #self.get_logger().info(f"Camera Tilt Decreased: {self.camera_tilt}")
 
         elif event.button == 6:
             self.mode = "aruco" if self.mode == "manual" else "manual"
             self.get_logger().info(f"Switched to {self.mode} mode.")
+
 
     ### ArUco Mode ###
     def pose_callback(self, msg):
