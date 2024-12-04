@@ -11,6 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/grasp_launch.py']),
+        ('share/' + package_name + '/launch', ['launch/run_all_test.launch.py']),
         ('share/' + package_name + '/config', ['config/camera_info.yaml']),
     ],
     install_requires=['setuptools'],
@@ -34,6 +35,7 @@ setup(
             'bluerov_markerfollower = bluerov_grasp.bluerov_markerfollower:main',
             'bluerov_controller = bluerov_grasp.bluerov_controller:main',
             'manual_follower_depth_aruco = bluerov_grasp.manual_follower_depth_aruco:main',
+            'run_all_text_launch = bluerov_grasp.run_all_text_launch:main',
         ],
     },
 )
