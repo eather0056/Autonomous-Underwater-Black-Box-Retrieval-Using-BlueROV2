@@ -6,8 +6,7 @@ import pygame
 from pygame.locals import *
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import FluidPressure
-from std_msgs.msg import Bool
-
+from std_msgs.msg import Bool, Header, Float64
 
 class BlueROVController(Node):
     def __init__(self):
@@ -22,29 +21,28 @@ class BlueROVController(Node):
         self.armed = False
         self.mode = "manual"  # Modes: "manual", "aruco", "depth"
 
-        # Depth hold parameters
-        self.target_depth = 0.0
-        self.depth_neutral_pwm = 1500
-        self.depth_max_pwm = 1900
-        self.depth_min_pwm = 1100
-        self.KP = 600
-        self.KI = 100
-        self.KD = 50
-        self.depth_integral = 0.0
-        self.previous_depth = 0.0
-        self.previous_time = self.get_clock().now()
-        self.current_depth = 0.0
+        # Depth PID parameters
+        self.depth_Kp = 1.0    # Adjusted Proportional gain
+        self.depth_Ki = 0.1    # Introduced Integral gain
+        self.depth_Kd = 0.3    # Increased Derivative gain
 
-        # Autonomous mode gains (lowered for smoother movements)
+        # Depth control variables
+        self.depth_target = 0.0  # Desired depth in meters
+        self.depth_integral = 0.0
+        self.depth_prev_error = 0.0
+        self.depth_last_time = None
+        self.depth_p0 = None
+        self.current_depth = 0.0
+        self.init_p0 = True  # For initializing reference depth
+
+        # Autonomous mode gains
         self.forward_gain = 50
         self.lateral_gain = 50
         self.vertical_gain = 50
 
-        # Subscribe to ArUco pose topic and pressure data
+        # Subscribe to ArUco pose topic
         self.pose_sub = self.create_subscription(
             PoseStamped, '/aruco_pose', self.pose_callback, 10)
-        self.pressure_sub = self.create_subscription(
-            FluidPressure, '/bluerov2/scaled_pressure2', self.pressure_callback, 10)
 
         # Start update loops
         self.start_heartbeat_and_input_loops()
@@ -52,7 +50,7 @@ class BlueROVController(Node):
 
     ### Initialization Functions ###
     def initialize_mavlink_config(self):
-        self.heartbeat_period = 0.02  # Heartbeat every 20 ms
+        self.heartbeat_period = 1.0  # Heartbeat every 1 second
 
     def initialize_rc_defaults(self):
         self.gripper = 1500  # RC1
@@ -66,6 +64,10 @@ class BlueROVController(Node):
 
     def initialize_ros_publishers(self):
         self.arm_pub = self.create_publisher(Bool, "/bluerov2/arm_status", 10)
+        self.pressure_publisher = self.create_publisher(
+            FluidPressure, '/bluerov2/scaled_pressure2', 10)
+        self.depth_publisher = self.create_publisher(
+            Float64, '/depth', 10)
 
     def initialize_mavlink_connection(self):
         self.declare_parameter("ip", "192.168.2.1")
@@ -93,8 +95,10 @@ class BlueROVController(Node):
             self.get_logger().info(f"Joystick detected: {joystick.get_name()}")
 
     def start_heartbeat_and_input_loops(self):
-        self.create_timer(0.04, self.update_inputs)  # Joystick input loop
-        self.create_timer(self.heartbeat_period, self.send_bluerov_commands)  # Sends commands to BlueROV
+        self.create_timer(0.02, self.update_inputs)  # Joystick input loop at 50 Hz
+        self.create_timer(0.02, self.send_bluerov_commands)  # Sends commands to BlueROV
+        self.create_timer(0.01, self.read_mavlink_messages)  # Read MAVLink messages
+        self.create_timer(self.heartbeat_period, self.send_heartbeat)  # Send heartbeat
 
     ### MAVLink Command Functions ###
     def arm(self):
@@ -116,7 +120,7 @@ class BlueROVController(Node):
 
     def map_value_scal_sat(self, value):
         """Scale joystick input (-1 to 1) to PWM range (1100-1900) with neutral at 1500."""
-        return self.clamp_rc_value(value * 100 + 1500)
+        return self.clamp_rc_value(value * 400 + 1500)
 
     def send_rc_override(self, forward, lateral, throttle, yaw):
         rc_channel_values = (
@@ -142,7 +146,18 @@ class BlueROVController(Node):
             # ArUco mode logic handled in pose_callback
             pass
         elif self.mode == "depth":
-            self.send_depth_hold_commands()
+            # Perform depth control
+            self.perform_depth_control()
+
+    ### Heartbeat Function ###
+    def send_heartbeat(self):
+        self.mav.heartbeat_send(
+            type=mavutil.mavlink.MAV_TYPE_GCS,
+            autopilot=mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+            base_mode=0,
+            custom_mode=0,
+            system_status=mavutil.mavlink.MAV_STATE_ACTIVE
+        )
 
     ### Input Handling ###
     def update_inputs(self):
@@ -153,10 +168,10 @@ class BlueROVController(Node):
                 self.handle_button_press(event)
 
     def handle_joystick_motion(self, event):
-        if self.mode == "manual":
-            value = event.value
-            pwm_value = self.map_value_scal_sat(value)
+        value = event.value
+        pwm_value = self.map_value_scal_sat(value)
 
+        if self.mode == "manual":
             if event.axis == 0:
                 self.lateral = pwm_value
             elif event.axis == 1:
@@ -167,6 +182,10 @@ class BlueROVController(Node):
                 self.throttle = pwm_value
             elif event.axis == 2:
                 self.camera_tilt = pwm_value
+        elif self.mode == "depth":
+            # Allow yaw control in depth hold mode
+            if event.axis == 3:
+                self.yaw = pwm_value
 
     def handle_button_press(self, event):
         if event.button == 7:
@@ -179,6 +198,14 @@ class BlueROVController(Node):
                 self.mode = "aruco"
             elif self.mode == "aruco":
                 self.mode = "depth"
+                # Set target depth to current depth
+                self.depth_target = self.current_depth
+                # Reset PID variables
+                self.depth_integral = 0.0
+                self.depth_prev_error = 0.0
+                self.depth_last_time = None
+                self.init_p0 = True  # Re-initialize reference depth
+                self.get_logger().info(f"Depth hold activated at depth: {self.current_depth:.2f} m")
             else:
                 self.mode = "manual"
             self.get_logger().info(f"Switched to {self.mode} mode.")
@@ -210,43 +237,125 @@ class BlueROVController(Node):
         self.get_logger().info(f"Aruco: Forward={forward}, Lateral={lateral}, Throttle={throttle}")
 
     ### Depth Hold Mode ###
-    def pressure_callback(self, msg):
-        # Convert pressure (in Pa) to depth (in meters)
-        surface_pressure_pa = 103425.0
-        water_density = 1000.0
-        gravity = 9.81
-        self.current_depth = -(msg.fluid_pressure - surface_pressure_pa) / (water_density * gravity)
+    def perform_depth_control(self):
+        # Depth control logic
+        depth_error = self.depth_target - self.current_depth
 
-    def calculate_depth_pwm(self):
-        # Correct depth error calculation for PID control
-        error = self.target_depth + self.current_depth  # Invert error to ensure correct direction
-        current_time = self.get_clock().now()
-        delta_time = (current_time - self.previous_time).nanoseconds * 1e-9
-        self.previous_time = current_time
+        current_time = self.get_clock().now().nanoseconds * 1e-9  # Convert to seconds
 
-        # PID terms
-        self.depth_integral += error * delta_time
-        depth_derivative = (self.current_depth - self.previous_depth) / delta_time
-        self.previous_depth = self.current_depth
+        if self.depth_last_time is None:
+            dt = 0.02  # Default to control loop interval
+        else:
+            dt = current_time - self.depth_last_time
+            if dt <= 0.0 or dt > 1.0:
+                dt = 0.02  # Discard invalid dt values
 
-        # PID control output
-        pid_output = (self.KP * error) + (self.KI * self.depth_integral) - (self.KD * depth_derivative)
+        self.depth_last_time = current_time
 
-        # Convert PID output to throttle PWM
-        throttle_pwm = self.clamp_rc_value(self.depth_neutral_pwm + pid_output)
-        return throttle_pwm
+        # PID control logic
+        derivative = (depth_error - self.depth_prev_error) / dt
 
+        # Limit derivative to prevent spikes due to noise
+        max_derivative = 0.5  # Adjust based on observed noise levels
+        derivative = max(min(derivative, max_derivative), -max_derivative)
 
+        self.depth_integral += depth_error * dt
 
-    def send_depth_hold_commands(self):
-        pwm = self.calculate_depth_pwm()
+        # Implement windup guard
+        max_integral = 1.0  # Prevent integral windup
+        self.depth_integral = max(min(self.depth_integral, max_integral), -max_integral)
+
+        control_signal = (self.depth_Kp * depth_error +
+                          self.depth_Ki * self.depth_integral +
+                          self.depth_Kd * derivative)
+
+        self.depth_prev_error = depth_error
+
+        # Map control signal to PWM
+        pwm = self.map_value_scale_sat_depth(-control_signal)
+
+        # Send RC override (only throttle and yaw)
         self.send_rc_override(self.forward, self.lateral, pwm, self.yaw)
+
+        # Log for debugging
+        self.get_logger().info(
+            f"Depth Control: error={depth_error:.3f}, control_signal={control_signal:.2f}, "
+            f"pwm={pwm}, current_depth={self.current_depth:.2f}")
+
+    def map_value_scale_sat_depth(self, value):
+        # Map control signal to PWM value with adjusted scaling and limits
+        pulse_width = value * 300 + 1500  # Adjusted scaling factor
+        pulse_width = max(1400, min(1600, pulse_width))  # Adjusted PWM limits
+        return int(pulse_width)
+
+    ### MAVLink Message Reading ###
+    def read_mavlink_messages(self):
+        try:
+            message = self.connection.recv_match(blocking=False)
+            if not message:
+                return
+
+            if message.get_type() == 'HEARTBEAT':
+                # Handle heartbeat messages if necessary
+                pass
+
+            if message.get_type() == 'SCALED_PRESSURE2':
+                pressure = message.press_abs  # Pressure in hPa
+
+                # Convert hPa to Pa for consistency
+                pressure_pa = pressure * 100.0
+
+                # Create FluidPressure message (if needed)
+                pressure_msg = FluidPressure()
+                pressure_msg.header = Header()
+                pressure_msg.header.stamp = self.get_clock().now().to_msg()
+                pressure_msg.header.frame_id = 'base_link'
+                pressure_msg.fluid_pressure = pressure_pa  # Pressure in Pa
+                pressure_msg.variance = 0.0
+
+                # Publish pressure message
+                self.pressure_publisher.publish(pressure_msg)
+
+                # Update current_depth
+                surface_pressure_pa = 101300.0  # Standard atmospheric pressure at sea level in Pa
+                water_density = 1000.0  # Density of water in kg/m^3
+                gravity = 9.80665  # Acceleration due to gravity in m/s^2
+
+                # Initialize reference depth (p0)
+                if self.init_p0:
+                    self.depth_p0 = (pressure_pa - surface_pressure_pa) / (water_density * gravity)
+                    self.init_p0 = False
+                    self.get_logger().info(f"Reference depth (p0) initialized: {self.depth_p0:.2f} m")
+
+                # Calculate current depth
+                raw_depth = (pressure_pa - surface_pressure_pa) / (water_density * gravity) - self.depth_p0
+                raw_depth = max(0.0, raw_depth)  # Depth cannot be negative
+
+                # Apply smoothing filter to depth measurements
+                alpha = 0.7  # Smoothing factor between 0 and 1
+                if hasattr(self, 'filtered_depth'):
+                    self.filtered_depth = alpha * self.filtered_depth + (1 - alpha) * raw_depth
+                else:
+                    self.filtered_depth = raw_depth
+
+                self.current_depth = self.filtered_depth
+
+                # Publish current depth for monitoring
+                depth_msg = Float64()
+                depth_msg.data = self.current_depth
+                self.depth_publisher.publish(depth_msg)
+
+            if message.get_type() == 'STATUSTEXT':
+                text = message.text
+                self.get_logger().info(f"Status: {text}")
+
+        except Exception as e:
+            self.get_logger().error(f"Error reading MAVLink message: {e}")
 
     def shutdown(self):
         self.disarm()
         self.connection.close()
         self.get_logger().info("Controller shut down.")
-
 
 def main(args=None):
     rclpy.init(args=args)
@@ -257,7 +366,6 @@ def main(args=None):
         node.shutdown()
     finally:
         rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()
