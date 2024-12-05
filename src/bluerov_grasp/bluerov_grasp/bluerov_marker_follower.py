@@ -7,8 +7,9 @@ import pygame
 from pygame.locals import *
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import UInt16, Bool
-from sensor_msgs.msg import BatteryState
+from sensor_msgs.msg import BatteryState, Imu
 from bluerov2_interfaces.msg import Attitude, Bar30
+from scipy.spatial.transform import Rotation as R
 import math
 
 
@@ -33,9 +34,37 @@ class BlueROVController(Node):
             10
         )
 
+                # Initialize IMU yaw
+        self.current_imu_yaw = 0.0
+
+        # Subscribe to the IMU topic
+        self.imu_sub = self.create_subscription(
+            Imu,  # Import the Imu message type from sensor_msgs.msg
+            '/bluerov2/imu/data',
+            self.imu_callback,
+            10
+        )
+
         # Start update loops
         self.start_heartbeat_and_input_loops()
         self.get_logger().info("BlueROV Controller Initialized.")
+
+
+    def imu_callback(self, msg):
+        """Callback to process IMU data and extract yaw using scipy."""
+        # Extract quaternion
+        quaternion = [msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w]
+
+        # Convert quaternion to Euler angles (roll, pitch, yaw)
+        euler_angles = R.from_quat(quaternion).as_euler('xyz', degrees=False)
+        yaw = euler_angles[2]  # Yaw is the third element in the 'xyz' order
+
+        # Store the current yaw for use in pose_callback
+        self.current_imu_yaw = yaw
+
+        # Log the IMU yaw for debugging
+        self.get_logger().info(f"IMU Yaw: {yaw:.3f} radians")
+
 
     ### Initialization Functions ###
     def initialize_mavlink_config(self):
@@ -169,91 +198,100 @@ class BlueROVController(Node):
             #     self.camera_tilt = pwm_value
 
     def handle_button_press(self, event):
+        
         if event.button == 7:
             if self.armed:
                 self.disarm()
             else:
                 self.arm()
 
-        elif event.button == 0:  # Button A: Toggle gripper
-            if self.gripper == 1500 or self.gripper == 1100:  # Assume default or open state
-                self.gripper = 1900  # Close gripper
-                self.get_logger().info("Gripper Closed")
-            else:
-                self.gripper = 1100  # Open gripper
-                self.get_logger().info("Gripper Opened")
-
+        elif event.button == 0:  # Button A: Close gripper
+            self.gripper = 1900
+        elif event.button == 1:  # Button B: Open gripper
+            self.gripper = 1100
         elif event.button == 4:  # Left bumper: Decrease light intensity
             self.lights = max(1100, self.lights - 100)
         elif event.button == 5:  # Right bumper: Increase light intensity
             self.lights = min(1900, self.lights + 100)
         elif event.button == 2:  # Button X: Tilt camera up
             self.camera_tilt = min(1900, self.camera_tilt + 100)  # Increase camera tilt
+            #self.get_logger().info(f"Camera Tilt Increased: {self.camera_tilt}")
         elif event.button == 3:  # Button Y: Tilt camera down
             self.camera_tilt = max(1100, self.camera_tilt - 100)  # Decrease camera tilt
+            #self.get_logger().info(f"Camera Tilt Decreased: {self.camera_tilt}")
 
         elif event.button == 6:
             self.mode = "aruco" if self.mode == "manual" else "manual"
             self.get_logger().info(f"Switched to {self.mode} mode.")
-
 
     ### ArUco Mode ###
     def pose_callback(self, msg):
         if not self.armed or self.mode != "aruco":
             return
 
-        # Extract pose data
+        # Extract pose data from camera frame
         forward_distance = msg.pose.position.z  # Distance from the marker
         lateral_offset = msg.pose.position.x    # Side-to-side offset
-        vertical_offset = -msg.pose.position.y   # Vertical offset
+        vertical_offset = -msg.pose.position.y  # Vertical offset (assuming up is positive)
 
-        # Yaw control parameters
-        yaw_kp = 150  # Proportional gain for yaw
-        yaw_kd = 50   # Derivative gain for yaw
-        yaw_deadband = 0.01  # Deadband for small yaw errors (in radians)
+        # Compute target yaw (angle to the marker) in the robot's frame
+        target_yaw = math.atan2(lateral_offset, forward_distance)
+        yaw_error = target_yaw
 
-        # Calculate yaw error (using relative marker orientation to ROV)
-        target_yaw = math.atan2(lateral_offset, forward_distance)  # Angle to the marker
-        current_yaw = getattr(self, 'current_yaw', 0.0)  # Default to 0 if not set
-        yaw_error = target_yaw - current_yaw
-
-        # Normalize yaw error to the range [-π, π]
+        # Normalize yaw error to [-pi, pi]
         yaw_error = (yaw_error + math.pi) % (2 * math.pi) - math.pi
 
-        # Derivative term for yaw
+        # Update integral and derivative terms for yaw
+        self.yaw_integral_error += yaw_error
         delta_yaw_error = yaw_error - getattr(self, 'prev_yaw_error', 0.0)
 
-        # Apply deadband to reduce unnecessary adjustments
-        if abs(yaw_error) < yaw_deadband:
-            yaw = 1500
-        else:
-            yaw = 1500 + int(yaw_kp * yaw_error + yaw_kd * delta_yaw_error)
+        # PID control for yaw
+        yaw_kp = 500  # Adjust gains as needed
+        yaw_ki = 0.0
+        yaw_kd = 50
+        yaw = 1500 + int(yaw_kp * yaw_error + yaw_ki * self.yaw_integral_error + yaw_kd * delta_yaw_error)
 
-        # Save current yaw and error for the next iteration
         self.prev_yaw_error = yaw_error
-        self.current_yaw = target_yaw
 
-        # Forward control parameters
-        forward_kp = 80  # Proportional gain for forward
-        forward_kd = 20   # Derivative gain for forward
-        forward_error = forward_distance - 1.5  # Error for maintaining 1.5m distance
+        # Forward error (maintain desired distance)
+        desired_distance = 1.0  # Desired distance from the marker
+        forward_error = forward_distance - desired_distance
+        self.forward_integral_error += forward_error
         delta_forward_error = forward_error - getattr(self, 'prev_forward_error', 0.0)
-        forward = 1500 + int(forward_kp * forward_error + forward_kd * delta_forward_error)
+
+        # PID control for forward movement
+        forward_kp = 400
+        forward_ki = 0.0
+        forward_kd = 30
+        forward = 1500 + int(forward_kp * forward_error + forward_ki * self.forward_integral_error + forward_kd * delta_forward_error)
+
         self.prev_forward_error = forward_error
 
-        # Lateral control parameters
-        lateral_kp = 150  # Proportional gain for lateral
-        lateral_kd = 80   # Derivative gain for lateral
-        delta_lateral_error = lateral_offset - getattr(self, 'prev_lateral_error', 0.0)
-        lateral = 1500 + int(lateral_kp * lateral_offset + lateral_kd * delta_lateral_error)
-        self.prev_lateral_error = lateral_offset
+        # Lateral error (align with marker)
+        lateral_error = lateral_offset
+        self.lateral_integral_error += lateral_error
+        delta_lateral_error = lateral_error - getattr(self, 'prev_lateral_error', 0.0)
 
-        # Vertical (throttle) control parameters
-        throttle_kp = 180  # Proportional gain for vertical
-        throttle_kd = 90   # Derivative gain for vertical
-        delta_vertical_error = vertical_offset - getattr(self, 'prev_vertical_error', 0.0)
-        throttle = 1500 + int(throttle_kp * vertical_offset + throttle_kd * delta_vertical_error)
-        self.prev_vertical_error = vertical_offset
+        # PID control for lateral movement
+        lateral_kp = 400
+        lateral_ki = 0.0
+        lateral_kd = 30
+        lateral = 1500 + int(lateral_kp * lateral_error + lateral_ki * self.lateral_integral_error + lateral_kd * delta_lateral_error)
+
+        self.prev_lateral_error = lateral_error
+
+        # Vertical error (maintain vertical alignment)
+        vertical_error = vertical_offset
+        self.vertical_integral_error += vertical_error
+        delta_vertical_error = vertical_error - getattr(self, 'prev_vertical_error', 0.0)
+
+        # PID control for vertical movement
+        throttle_kp = 400
+        throttle_ki = 0.0
+        throttle_kd = 30
+        throttle = 1500 + int(throttle_kp * vertical_error + throttle_ki * self.vertical_integral_error + throttle_kd * delta_vertical_error)
+
+        self.prev_vertical_error = vertical_error
 
         # Clamp all RC values to the valid range
         forward = self.clamp_rc_value(forward)
@@ -267,13 +305,8 @@ class BlueROVController(Node):
         # Log debug information
         self.get_logger().info(
             f"Aruco Mode: Forward={forward}, Lateral={lateral}, Throttle={throttle}, Yaw={yaw} "
-            f"(Yaw Error={yaw_error:.2f}, Delta Yaw Error={delta_yaw_error:.2f}, Target Yaw={target_yaw:.2f}, "
-            f"Forward Error={forward_error:.2f}, Lateral Offset={lateral_offset:.2f}, Vertical Offset={vertical_offset:.2f})"
+            f"(Yaw Error={yaw_error:.2f}, Forward Error={forward_error:.2f}, Lateral Error={lateral_error:.2f}, Vertical Error={vertical_error:.2f})"
         )
-
-
-
-
 
 
 
