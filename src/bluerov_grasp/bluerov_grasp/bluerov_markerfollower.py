@@ -7,8 +7,9 @@ import pygame
 from pygame.locals import *
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import UInt16, Bool
-from sensor_msgs.msg import BatteryState
+from sensor_msgs.msg import BatteryState, Imu
 from bluerov2_interfaces.msg import Attitude, Bar30
+from scipy.spatial.transform import Rotation as R
 import math
 
 
@@ -33,9 +34,37 @@ class BlueROVController(Node):
             10
         )
 
+                # Initialize IMU yaw
+        self.current_imu_yaw = 0.0
+
+        # Subscribe to the IMU topic
+        self.imu_sub = self.create_subscription(
+            Imu,  # Import the Imu message type from sensor_msgs.msg
+            '/bluerov2/imu/data',
+            self.imu_callback,
+            10
+        )
+
         # Start update loops
         self.start_heartbeat_and_input_loops()
         self.get_logger().info("BlueROV Controller Initialized.")
+
+
+    def imu_callback(self, msg):
+        """Callback to process IMU data and extract yaw using scipy."""
+        # Extract quaternion
+        quaternion = [msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w]
+
+        # Convert quaternion to Euler angles (roll, pitch, yaw)
+        euler_angles = R.from_quat(quaternion).as_euler('xyz', degrees=False)
+        yaw = euler_angles[2]  # Yaw is the third element in the 'xyz' order
+
+        # Store the current yaw for use in pose_callback
+        self.current_imu_yaw = yaw
+
+        # Log the IMU yaw for debugging
+        self.get_logger().info(f"IMU Yaw: {yaw:.3f} radians")
+
 
     ### Initialization Functions ###
     def initialize_mavlink_config(self):
@@ -212,21 +241,23 @@ class BlueROVController(Node):
             self.lateral_integral_error = 0.0
             self.vertical_integral_error = 0.0
 
+        # Use IMU for current yaw
+        current_yaw = getattr(self, 'current_imu_yaw', 0.0)  # Default to 0 if not set
+
         # Yaw control parameters
         yaw_kp = 10  # Proportional gain for yaw
-        yaw_ki = 0.1   # Integral gain for yaw
-        yaw_kd = 50   # Derivative gain for yaw
+        yaw_ki = 0.001   # Integral gain for yaw
+        yaw_kd = 1   # Derivative gain for yaw
         yaw_deadband = 0.01  # Deadband for small yaw errors (in radians)
 
-        # Calculate yaw error
+        # Calculate target yaw based on ArUco marker
         target_yaw = math.atan2(lateral_offset, forward_distance)  # Angle to the marker
-        current_yaw = getattr(self, 'current_yaw', 0.0)  # Default to 0 if not set
         yaw_error = target_yaw - current_yaw
 
         # Normalize yaw error to the range [-π, π]
         yaw_error = (yaw_error + math.pi) % (2 * math.pi) - math.pi
 
-        # Update integral and derivative terms
+        # Update integral and derivative terms for yaw
         self.yaw_integral_error += yaw_error
         delta_yaw_error = yaw_error - getattr(self, 'prev_yaw_error', 0.0)
 
@@ -234,11 +265,10 @@ class BlueROVController(Node):
         if abs(yaw_error) < yaw_deadband:
             yaw = 1500
         else:
-            yaw = 1500 + int(yaw_kp * yaw_error)
+            yaw = 1500 + int(yaw_kp * yaw_error + yaw_ki * self.yaw_integral_error + yaw_kd * delta_yaw_error)
 
         # Save current yaw and error for the next iteration
         self.prev_yaw_error = yaw_error
-        self.current_yaw = target_yaw
 
         # Forward control parameters
         forward_kp = 60  # Proportional gain for forward
