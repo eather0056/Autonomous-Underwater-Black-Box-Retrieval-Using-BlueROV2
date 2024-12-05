@@ -274,28 +274,26 @@ class BlueROVController(Node):
         forward_kp = 60  # Proportional gain for forward
         forward_ki = 0.2  # Integral gain for forward
         forward_kd = 20  # Derivative gain for forward
-        forward_error = forward_distance - 1.5  # Error for maintaining 1.5m distance
+        forward_error = forward_distance - 1.0  # Error for maintaining 1.5m distance
         delta_forward_error = forward_error - getattr(self, 'prev_forward_error', 0.0)
         self.forward_integral_error += forward_error
         forward = 1500 + int(forward_kp * forward_error + forward_ki * self.forward_integral_error + forward_kd * delta_forward_error)
         self.prev_forward_error = forward_error
 
-        # Lateral control parameters (activate only if closer than 2 meters)
-        if forward_distance <= 2.0:
-            lateral_kp = 60  # Proportional gain for lateral
-            lateral_ki = 0.2  # Integral gain for lateral
-            lateral_kd = 20  # Derivative gain for lateral
-            delta_lateral_error = lateral_offset - getattr(self, 'prev_lateral_error', 0.0)
-            self.lateral_integral_error += lateral_offset
-            lateral = 1500 + int(lateral_kp * lateral_offset + lateral_ki * self.lateral_integral_error + lateral_kd * delta_lateral_error)
-            self.prev_lateral_error = lateral_offset
-        else:
-            lateral = 1500  # Keep lateral neutral if farther than 2 meters
+        # Lateral control parameters using IMU data for alignment
+        lateral_kp = 70  # Proportional gain for lateral
+        lateral_ki = 0.2  # Integral gain for lateral
+        lateral_kd = 20  # Derivative gain for lateral
+        lateral_error = lateral_offset - math.sin(current_yaw) * forward_distance
+        delta_lateral_error = lateral_error - getattr(self, 'prev_lateral_error', 0.0)
+        self.lateral_integral_error += lateral_error
+        lateral = 1500 + int(lateral_kp * lateral_error + lateral_ki * self.lateral_integral_error + lateral_kd * delta_lateral_error)
+        self.prev_lateral_error = lateral_error
 
         # Vertical (throttle) control parameters
         throttle_kp = 180  # Proportional gain for vertical
         throttle_ki = 0.2   # Integral gain for vertical
-        throttle_kd = 90   # Derivative gain for vertical
+        throttle_kd = 30   # Derivative gain for vertical
         delta_vertical_error = vertical_offset - getattr(self, 'prev_vertical_error', 0.0)
         self.vertical_integral_error += vertical_offset
         throttle = 1500 + int(throttle_kp * vertical_offset + throttle_ki * self.vertical_integral_error + throttle_kd * delta_vertical_error)
@@ -314,7 +312,7 @@ class BlueROVController(Node):
         self.get_logger().info(
             f"Aruco Mode: Forward={forward}, Lateral={lateral}, Throttle={throttle}, Yaw={yaw} "
             f"(Yaw Error={yaw_error:.2f}, Delta Yaw Error={delta_yaw_error:.2f}, Target Yaw={target_yaw:.2f}, "
-            f"Forward Error={forward_error:.2f}, Lateral Offset={lateral_offset:.2f}, Vertical Offset={vertical_offset:.2f})"
+            f"Forward Error={forward_error:.2f}, Lateral Error={lateral_error:.2f}, Vertical Offset={vertical_offset:.2f})"
         )
 
 
