@@ -234,6 +234,13 @@ class BlueROVController(Node):
         lateral_offset = msg.pose.position.x    # Side-to-side offset
         vertical_offset = -msg.pose.position.y  # Vertical offset (assuming up is positive)
 
+        # Initialize integral errors if not already set
+        if not hasattr(self, 'yaw_integral_error'):
+            self.yaw_integral_error = 0.0
+            self.forward_integral_error = 0.0
+            self.lateral_integral_error = 0.0
+            self.vertical_integral_error = 0.0
+
         # Compute target yaw (angle to the marker) in the robot's frame
         target_yaw = math.atan2(lateral_offset, forward_distance)
         yaw_error = target_yaw
