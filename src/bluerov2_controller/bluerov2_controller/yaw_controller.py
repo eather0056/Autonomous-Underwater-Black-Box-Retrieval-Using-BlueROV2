@@ -36,7 +36,7 @@ class Controller(Node):
         self.setEnable_sub      = self.create_subscription(Bool, "/settings/yaw/set_enable", self.callback_set_enable, 10) 
 
         # Create publisher
-        self.yaw_pub           = self.create_publisher(UInt16, "/bluerov2/rc/yaw", 10)
+        self.yaw_pub           = self.create_publisher(UInt16, "/bluerov2/rc/ar/yaw", 10)
         self.status_pub        = self.create_publisher(String, '/settings/yaw/status', 10)      
 
         self.get_logger().info('controller has been successfully configured!')

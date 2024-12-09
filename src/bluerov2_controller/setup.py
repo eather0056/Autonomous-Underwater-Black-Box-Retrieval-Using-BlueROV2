@@ -21,13 +21,18 @@ setup(
     entry_points={
         'console_scripts': [
             "controller = bluerov2_controller.controller:main",
+            "controller_ld = bluerov2_controller.controller_ld:main",
             "depth_controller = bluerov2_controller.depth_controller:main",
             "pitch_controller = bluerov2_controller.pitch_controller:main",
             "roll_controller = bluerov2_controller.roll_controller:main",
             "yaw_controller = bluerov2_controller.yaw_controller:main",
             "input_controller = bluerov2_controller.input_controller:main",
+            "input_controller_ld = bluerov2_controller.input_controller_ld:main",
             "video = bluerov2_controller.video:main",
             "manual_controller = bluerov2_controller.manual_controller:main",
+            "aruco_alignment_controller = bluerov2_controller.aruco_alignment_controller:main",
+            "gui_controller = bluerov2_controller.gui_controller:main",
+            "aruco_yaw_controller = bluerov2_controller.aruco_yaw_controller:main",
         ],
     },
 )

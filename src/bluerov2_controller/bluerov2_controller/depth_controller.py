@@ -16,7 +16,7 @@ class Controller(Node):
         super().__init__("depth_controller")
 
         # Setup default parameters
-        self.declare_parameter("depth_desired", 0) 
+        self.declare_parameter("depth_desired", 0.0) 
         self.declare_parameter("pwm_max", 1900)
         self.declare_parameter("pwm_neutral", 1500)
         self.declare_parameter("ki", 100)      

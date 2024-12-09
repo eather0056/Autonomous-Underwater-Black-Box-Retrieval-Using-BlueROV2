@@ -24,15 +24,15 @@ class Controller(Node):
         self.declare_parameter("pwm_gripper_min", 1100)
         self.declare_parameter("gain_pwm_cam", 400)     
         self.declare_parameter("gain_pwm_lights", 50)
-        self.declare_parameter("gain_pwm_gripper", 50)
+        self.declare_parameter("gain_pwm_gripper", 100)
         self.declare_parameter("gain_depth", 0.1)
         self.declare_parameter("arm_status", False)
         self.declare_parameter("debug", True)
 
-        self.pwm_min                = self.get_parameter("pwm_min").value
-        self.pwm_gain                = self.get_parameter("pwm_gain").value 
+        self.pwm_min                = self.get_parameter("pwm_min").value 
         self.pwm_max                = self.get_parameter("pwm_max").value
-        self.pwm_neutral            = self.get_parameter("pwm_neutral").value        
+        self.pwm_neutral            = self.get_parameter("pwm_neutral").value
+        self.pwm_gain               = self.get_parameter("pwm_gain").value         
         self.pwm_camera_max         = self.get_parameter("pwm_camera_max").value 
         self.pwm_camera_min         = self.get_parameter("pwm_camera_min").value 
         self.pwm_lights_max         = self.get_parameter("pwm_lights_max").value 
@@ -63,6 +63,11 @@ class Controller(Node):
         self.yaw_pub                = self.create_publisher(UInt16, "/bluerov2/rc/yaw", 10)     
         self.arm_pub                = self.create_publisher(Bool, "/bluerov2/arm", 10)
         self.depth_controller_pub   = self.create_publisher(Float64, "/settings/depth/set_depth", 10)        
+
+        # Control mode (manual or aruco-follow)
+        self.control_mode = "manual"
+        self.mode_pub = self.create_publisher(String, "/settings/control_mode", 10)
+        self.publish_control_mode()
 
         # Create subscriber
         self.depth_status_sub       = self.create_subscription(String, "/settings/depth/status", self.callback_node_status, 10)                 
@@ -114,7 +119,9 @@ class Controller(Node):
                     elif event.button == 2:     # X Button
                         self.adjust_gripper("open")  
                     elif event.button == 7:     # Start Button
-                        self.arm_disarm()   
+                        self.arm_disarm()
+                    elif event.button == 6:     # Start Button
+                        self.toggle_control_mode()   
                     elif event.button == 3:     # Y Button
                         self.dive_up()  
                     elif event.button == 0:     # A Button
@@ -228,8 +235,18 @@ class Controller(Node):
         
         match data["type"]:
             case "depth_controller": self.depth_status = data   
-            case "yaw_controller": self.yaw_status = data     
-            
+            case "yaw_controller": self.yaw_status = data  
+
+    def toggle_control_mode(self):
+        self.control_mode = "aruco" if self.control_mode == "manual" else "manual"
+        self.publish_control_mode()
+
+    def publish_control_mode(self):
+        mode_msg = String()
+        mode_msg.data = self.control_mode
+        self.mode_pub.publish(mode_msg)
+        self.get_logger().info(f"Control mode: {self.control_mode}")
+        
 def main(args=None):
     rclpy.init(args=args)    
     node = Controller()    

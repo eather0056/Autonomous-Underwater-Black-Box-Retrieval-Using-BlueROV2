@@ -87,7 +87,7 @@ class BlueROVController(Node):
 
     def initialize_mavlink_connection(self):
         self.declare_parameter("ip", "192.168.2.1")
-        self.declare_parameter("port", 14555)
+        self.declare_parameter("port", 14560)
         self.declare_parameter("baudrate", 115200)
 
         self.bluerov_ip = self.get_parameter("ip").value
@@ -229,75 +229,75 @@ class BlueROVController(Node):
         if not self.armed or self.mode != "aruco":
             return
 
-        # Extract pose data
+        # Extract pose data from camera frame
         forward_distance = msg.pose.position.z  # Distance from the marker
         lateral_offset = msg.pose.position.x    # Side-to-side offset
-        vertical_offset = -msg.pose.position.y  # Vertical offset
-
-        # Initialize integral errors if not already set
+        vertical_offset = -msg.pose.position.y  # Vertical offset (assuming up is positive)
+                # Initialize integral errors if not already set
         if not hasattr(self, 'yaw_integral_error'):
             self.yaw_integral_error = 0.0
             self.forward_integral_error = 0.0
             self.lateral_integral_error = 0.0
             self.vertical_integral_error = 0.0
 
-        # Use IMU for current yaw
-        current_yaw = getattr(self, 'current_imu_yaw', 0.0)  # Default to 0 if not set
+        # Compute target yaw (angle to the marker) in the robot's frame
+        target_yaw = math.atan2(lateral_offset, forward_distance)
+        yaw_error = target_yaw
 
-        # Yaw control parameters
-        yaw_kp = 10  # Proportional gain for yaw
-        yaw_ki = 0.001   # Integral gain for yaw
-        yaw_kd = 1   # Derivative gain for yaw
-        yaw_deadband = 0.01  # Deadband for small yaw errors (in radians)
-
-        # Calculate target yaw based on ArUco marker
-        target_yaw = math.atan2(lateral_offset, forward_distance)  # Angle to the marker
-        yaw_error = target_yaw - current_yaw
-
-        # Normalize yaw error to the range [-π, π]
+        # Normalize yaw error to [-pi, pi]
         yaw_error = (yaw_error + math.pi) % (2 * math.pi) - math.pi
 
         # Update integral and derivative terms for yaw
         self.yaw_integral_error += yaw_error
         delta_yaw_error = yaw_error - getattr(self, 'prev_yaw_error', 0.0)
 
-        # Apply deadband to reduce unnecessary adjustments
-        if abs(yaw_error) < yaw_deadband:
-            yaw = 1500
-        else:
-            yaw = 1500 + int(yaw_kp * yaw_error + yaw_ki * self.yaw_integral_error + yaw_kd * delta_yaw_error)
+        # PID control for yaw
+        yaw_kp = 50  # Adjust gains as needed
+        yaw_ki = 0.0
+        yaw_kd = 20
+        yaw = 1500 + int(yaw_kp * yaw_error + yaw_ki * self.yaw_integral_error + yaw_kd * delta_yaw_error)
 
-        # Save current yaw and error for the next iteration
         self.prev_yaw_error = yaw_error
 
-        # Forward control parameters
-        forward_kp = 60  # Proportional gain for forward
-        forward_ki = 0.2  # Integral gain for forward
-        forward_kd = 20  # Derivative gain for forward
-        forward_error = forward_distance - 1.0  # Error for maintaining 1.5m distance
-        delta_forward_error = forward_error - getattr(self, 'prev_forward_error', 0.0)
+        # Forward error (maintain desired distance)
+        desired_distance = 1.0  # Desired distance from the marker
+        forward_error = forward_distance - desired_distance
         self.forward_integral_error += forward_error
+        delta_forward_error = forward_error - getattr(self, 'prev_forward_error', 0.0)
+
+        # PID control for forward movement
+        forward_kp = 79
+        forward_ki = 0.0
+        forward_kd = 30
         forward = 1500 + int(forward_kp * forward_error + forward_ki * self.forward_integral_error + forward_kd * delta_forward_error)
+
         self.prev_forward_error = forward_error
 
-        # Lateral control parameters using IMU data for alignment
-        lateral_kp = 70  # Proportional gain for lateral
-        lateral_ki = 0.2  # Integral gain for lateral
-        lateral_kd = 20  # Derivative gain for lateral
-        lateral_error = lateral_offset - math.sin(current_yaw) * forward_distance
-        delta_lateral_error = lateral_error - getattr(self, 'prev_lateral_error', 0.0)
+        # Lateral error (align with marker)
+        lateral_error = lateral_offset
         self.lateral_integral_error += lateral_error
+        delta_lateral_error = lateral_error - getattr(self, 'prev_lateral_error', 0.0)
+
+        # PID control for lateral movement
+        lateral_kp = 70
+        lateral_ki = 0.0
+        lateral_kd = 30
         lateral = 1500 + int(lateral_kp * lateral_error + lateral_ki * self.lateral_integral_error + lateral_kd * delta_lateral_error)
+
         self.prev_lateral_error = lateral_error
 
-        # Vertical (throttle) control parameters
-        throttle_kp = 180  # Proportional gain for vertical
-        throttle_ki = 0.2   # Integral gain for vertical
-        throttle_kd = 30   # Derivative gain for vertical
-        delta_vertical_error = vertical_offset - getattr(self, 'prev_vertical_error', 0.0)
-        self.vertical_integral_error += vertical_offset
-        throttle = 1500 + int(throttle_kp * vertical_offset + throttle_ki * self.vertical_integral_error + throttle_kd * delta_vertical_error)
-        self.prev_vertical_error = vertical_offset
+        # Vertical error (maintain vertical alignment)
+        vertical_error = vertical_offset
+        self.vertical_integral_error += vertical_error
+        delta_vertical_error = vertical_error - getattr(self, 'prev_vertical_error', 0.0)
+
+        # PID control for vertical movement
+        throttle_kp = 200
+        throttle_ki = 0.0
+        throttle_kd = 30
+        throttle = 1500 + int(throttle_kp * vertical_error + throttle_ki * self.vertical_integral_error + throttle_kd * delta_vertical_error)
+
+        self.prev_vertical_error = vertical_error
 
         # Clamp all RC values to the valid range
         forward = self.clamp_rc_value(forward)
@@ -311,8 +311,7 @@ class BlueROVController(Node):
         # Log debug information
         self.get_logger().info(
             f"Aruco Mode: Forward={forward}, Lateral={lateral}, Throttle={throttle}, Yaw={yaw} "
-            f"(Yaw Error={yaw_error:.2f}, Delta Yaw Error={delta_yaw_error:.2f}, Target Yaw={target_yaw:.2f}, "
-            f"Forward Error={forward_error:.2f}, Lateral Error={lateral_error:.2f}, Vertical Offset={vertical_offset:.2f})"
+            f"(Yaw Error={yaw_error:.2f}, Forward Error={forward_error:.2f}, Lateral Error={lateral_error:.2f}, Vertical Error={vertical_error:.2f})"
         )
 
 
