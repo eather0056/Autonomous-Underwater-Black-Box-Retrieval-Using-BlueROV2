@@ -19,8 +19,8 @@ class ArucoDetectionNode(Node):
 
         # Parameters
         self.declare_parameter('image_topic', '/camera/image_raw/compressed')
-        self.declare_parameter('marker_length', 0.12)  # Marker size in meters
-        self.declare_parameter('aruco_dict_name', 'DICT_5X5_250')  # ArUco dictionary
+        self.declare_parameter('marker_length', 0.07)  # Marker size in meters
+        self.declare_parameter('aruco_dict_name', 'DICT_6X6_250')  # ArUco dictionary
         self.declare_parameter('camera_matrix', [715.919995, 0.000000, 558.212919, 0.000000, 718.924099, 289.680513, 0.0, 0.0, 1.000000])  # Default flat camera matrix
         self.declare_parameter('dist_coeffs', [0.055901, -0.016813, -0.015709, -0.014352, 0.000000])  # Default distortion coefficients
 

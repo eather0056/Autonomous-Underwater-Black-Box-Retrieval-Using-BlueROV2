@@ -26,11 +26,12 @@ class Controller(Node):
         self.attitude = [0, 0, 0, 0, 0, 0]  # [ROLL, PITCH, YAW, ROLLSPEED, PITCHSPEED, YAWSPEED]
         self.pwm_max = self.get_parameter("pwm_max").value  # Maximum PWM value
         self.pwm_neutral = self.get_parameter("pwm_neutral").value  # Neutral PWM value
-        self.yaw_desired = self.get_parameter("yaw_desired").value  # Desired pitch setpoint
+        self.yaw_desired = self.get_parameter("yaw_desired").value  # Desired yaw setpoint
         self.KP = self.get_parameter("kp").value  # Proportional gain constant
         self.KD = self.get_parameter("kd").value  # Derivative gain constant
 
         self.enable = self.get_parameter("enable").value
+        self.marker_yaw = None  # To store the desired yaw from marker alignment
 
         # Create subscribers
         self.attitude_sub = self.create_subscription(Attitude, "/bluerov2/attitude", self.callback_att, 10)
@@ -43,38 +44,37 @@ class Controller(Node):
         self.yaw_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/yaw", 10)
         self.status_pub = self.create_publisher(String, '/settings/yaw/status', 10)
 
-        self.marker_yaw = None  # To store the desired yaw from marker alignment
-
-        self.get_logger().info('controller has been successfully configured!')
+        self.get_logger().info('Yaw controller successfully initialized!')
 
         # Start update loop
         self.create_timer(0.04, self.calculate_pwm)
 
     def callback_att(self, msg):
-        self.attitude = [msg.roll,
-                         msg.pitch,
-                         msg.yaw,
-                         msg.rollspeed,
-                         msg.pitchspeed,
-                         msg.yawspeed]
+        """
+        Callback for attitude data. Updates the current yaw and yaw speed.
+        """
+        self.attitude = [msg.roll, msg.pitch, msg.yaw, msg.rollspeed, msg.pitchspeed, msg.yawspeed]
 
     def callback_set_pid(self, msg):
-        """Read data from '/settings/yaw/set_pid'"""
+        """
+        Callback for setting PID parameters.
+        """
         if msg.pwm_max != 65535:
-            if msg.pwm_max < 1500:
-                self.pwm_max = 1500
-            else:
-                self.pwm_max = msg.pwm_max
+            self.pwm_max = max(1500, msg.pwm_max)
 
-        self.KP = msg.kp if not msg.kp == 65535 else self.KP
-        self.KD = msg.kd if not msg.kd == 65535 else self.KD
+        self.KP = msg.kp if msg.kp != 65535 else self.KP
+        self.KD = msg.kd if msg.kd != 65535 else self.KD
 
     def callback_set_yaw(self, msg):
-        """Read data from '/settings/yaw/set_yaw'"""
+        """
+        Callback for setting the desired yaw.
+        """
         self.yaw_desired = msg.data
 
     def callback_set_enable(self, msg):
-        """Read data from '/settings/yaw/set_enable'"""
+        """
+        Callback for enabling or disabling the controller.
+        """
         self.enable = msg.data
 
     def pose_callback(self, msg):
@@ -83,13 +83,16 @@ class Controller(Node):
         """
         # Compute yaw from pose
         lateral_offset = msg.pose.position.x
-        forward_offset = msg.pose.position.z
+        forward_offset = -msg.pose.position.z  # Negative because forward is positive in robot frame
 
         # Calculate desired yaw to face the marker
         self.marker_yaw = math.atan2(lateral_offset, forward_offset)
         self.get_logger().info(f"Marker yaw updated to: {math.degrees(self.marker_yaw):.2f} degrees")
 
     def update_status(self):
+        """
+        Publish the current controller status.
+        """
         msg = String()
         data = {
             "type": "yaw_controller",
@@ -108,8 +111,8 @@ class Controller(Node):
         Compute control input using the PID controller.
         """
         desired_yaw = self.marker_yaw if self.marker_yaw is not None else self.yaw_desired
-        yaw_error = pid.sawtooth(yaw - desired_yaw)
-        return self.KP * yaw_error + self.KD * yawspeed
+        yaw_error = pid.sawtooth(desired_yaw - yaw)  # Error normalized to [-π, π]
+        return self.KP * yaw_error - self.KD * yawspeed
 
     def calculate_pwm(self):
         """
@@ -121,7 +124,7 @@ class Controller(Node):
             yaw = self.attitude[2]
             yawspeed = self.attitude[5]
             u = self.control(yaw, yawspeed)
-            pwm = self.pwm_neutral - u
+            pwm = self.pwm_neutral + u
 
             pwm = pid.saturation(pwm, self.pwm_neutral, self.pwm_max)
             msg.data = pwm

@@ -15,7 +15,7 @@ class Controller(Node):
         self.declare_parameter("pwm_max", 1900)
         self.declare_parameter("pwm_min", 1100)
         self.declare_parameter("pwm_neutral", 1500)
-        self.declare_parameter("pwm_gain", 200)        
+        self.declare_parameter("pwm_gain", 100)        
         self.declare_parameter("pwm_camera_max", 1900)
         self.declare_parameter("pwm_camera_min", 1100)
         self.declare_parameter("pwm_lights_max", 1900)
@@ -25,7 +25,7 @@ class Controller(Node):
         self.declare_parameter("gain_pwm_cam", 400)     
         self.declare_parameter("gain_pwm_lights", 50)
         self.declare_parameter("gain_pwm_gripper", 100)
-        self.declare_parameter("gain_depth", 0.1)
+        self.declare_parameter("gain_depth", 0.05)
         self.declare_parameter("arm_status", False)
         self.declare_parameter("debug", True)
 
@@ -190,7 +190,7 @@ class Controller(Node):
 
     def move_event(self, event):
         u = event.value
-        pwm = UInt16(data=self.calculate_pwm(u))        
+        pwm = UInt16(data=self.calculate_pwm(-u))        
 
         if event.axis == 1:
             self.forward_pub.publish(pwm)

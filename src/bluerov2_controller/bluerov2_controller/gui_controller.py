@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from tkinter import Tk, Scale, Button, Label, HORIZONTAL, Canvas, PhotoImage, Frame
+from tkinter import Tk, Scale, Button, Label, HORIZONTAL, Canvas, Frame
 from PIL import Image, ImageTk
 from std_msgs.msg import UInt16, Float64, Bool, String, Float32
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, Image
 import cv2
 import numpy as np
 
@@ -50,16 +50,16 @@ class GUIController(Node):
         self.button_frame.pack(fill="x", padx=10, pady=10)
 
         # Image display canvas
-        Label(self.image_frame, text="Normal Image", bg="black", fg="white", font=("Helvetica", 12, "bold")).pack(side="left", padx=5, pady=5)
+        Label(self.image_frame, text="Normal Image", bg="black", fg="white", font=("Helvetica", 12, "bold")).pack(side="top", padx=5, pady=5)
         self.normal_image_canvas = Canvas(self.image_frame, width=500, height=250, bg="black")
         self.normal_image_canvas.pack(side="left", padx=5, pady=5)
 
-        Label(self.image_frame, text="Detected Image", bg="black", fg="white", font=("Helvetica", 12, "bold")).pack(side="right", padx=5, pady=5)
+        Label(self.image_frame, text="Detected Image", bg="black", fg="white", font=("Helvetica", 12, "bold")).pack(side="top", padx=5, pady=5)
         self.detected_image_canvas = Canvas(self.image_frame, width=500, height=250, bg="black")
         self.detected_image_canvas.pack(side="right", padx=5, pady=5)
 
         # Subscribers for images
-        self.create_subscription(CompressedImage, "/camera/image_raw/compressed", self.update_normal_image, 10)
+        self.create_subscription(Image, "/camera/image_raw/compressed", self.update_normal_image, 10)
         self.create_subscription(CompressedImage, "/aruco_detected_image", self.update_detected_image, 10)
 
         # Display for ArUco Distance
@@ -99,14 +99,22 @@ class GUIController(Node):
         self.depth_slider.set(self.current_depth)
         self.depth_slider.pack(pady=10)
 
-        # Movement and Control Buttons (2x7 Grid Layout)
+        # Movement and Control Buttons
+        self.create_movement_buttons()
+
+        self.root.mainloop()
+
+    def create_movement_buttons(self):
         buttons = [
-            ("Forward", lambda: self.move("forward"), "lightgreen"),
-            ("Backward", lambda: self.move("backward"), "lightgreen"),
-            ("Left", lambda: self.move("left"), "lightblue"),
-            ("Right", lambda: self.move("right"), "lightblue"),
-            ("Yaw Left", lambda: self.move("yaw_left"), "yellow"),
-            ("Yaw Right", lambda: self.move("yaw_right"), "yellow"),
+            # Movement buttons with press/release events
+            ("Forward", self.forward_pub, 1600, "lightgreen"),
+            ("Backward", self.forward_pub, 1400, "lightgreen"),
+            ("Left", self.lateral_pub, 1400, "lightblue"),
+            ("Right", self.lateral_pub, 1600, "lightblue"),
+            ("Yaw Left", self.yaw_pub, 1400, "yellow"),
+            ("Yaw Right", self.yaw_pub, 1600, "yellow"),
+    
+            # Static action buttons
             ("Lights Up", lambda: self.adjust_lights("up"), "orange"),
             ("Lights Down", lambda: self.adjust_lights("down"), "orange"),
             ("Gripper Open", lambda: self.adjust_gripper("open"), "pink"),
@@ -116,30 +124,52 @@ class GUIController(Node):
             ("Manual Mode", lambda: self.switch_mode("manual"), "purple"),
             ("ArUco Mode", lambda: self.switch_mode("aruco"), "purple"),
         ]
+    
+        for i, button in enumerate(buttons):
+            if len(button) == 4:  # Movement buttons
+                text, publisher, value, color = button
+                btn = Button(
+                    self.button_frame,
+                    text=text,
+                    bg=color,
+                    font=("Helvetica", 10),
+                    width=18,
+                )
+                btn.grid(row=i // 7, column=i % 7, padx=5, pady=5)
+                btn.bind("<ButtonPress>", lambda event, pub=publisher, val=value: self.send_movement_command(pub, val))
+                btn.bind("<ButtonRelease>", lambda event, pub=publisher: self.stop_movement(pub))
+            elif len(button) == 3:  # Action buttons
+                text, command, color = button
+                Button(
+                    self.button_frame,
+                    text=text,
+                    command=command,
+                    bg=color,
+                    font=("Helvetica", 10),
+                    width=18,
+                ).grid(row=i // 7, column=i % 7, padx=5, pady=5)
+    
 
-        for i, (text, command, color) in enumerate(buttons):
-            Button(
-                self.button_frame,
-                text=text,
-                command=command,
-                bg=color,
-                font=("Helvetica", 10),
-                width=18,
-            ).grid(row=i // 7, column=i % 7, padx=5, pady=5)
+    def send_movement_command(self, publisher, value):
+        msg = UInt16()
+        msg.data = value
+        publisher.publish(msg)
 
-        # Main loop
-        self.root.mainloop()
+    def stop_movement(self, publisher):
+        msg = UInt16()
+        msg.data = 1500
+        publisher.publish(msg)
 
     def update_normal_image(self, msg):
-        """Update the normal image on the canvas."""
         img = self.decode_image(msg.data)
+        print("image")
         if img is not None:
             img_tk = ImageTk.PhotoImage(Image.fromarray(img))
             self.normal_image_canvas.create_image(0, 0, anchor="nw", image=img_tk)
             self.normal_image_canvas.image = img_tk
+            print("if")
 
     def update_detected_image(self, msg):
-        """Update the detected image on the canvas."""
         img = self.decode_image(msg.data)
         if img is not None:
             img_tk = ImageTk.PhotoImage(Image.fromarray(img))
@@ -147,101 +177,37 @@ class GUIController(Node):
             self.detected_image_canvas.image = img_tk
 
     def update_aruco_distance(self, msg):
-        """Update the displayed ArUco distance."""
         self.aruco_distance = msg.data
         self.distance_label.config(text=f"Distance: {self.aruco_distance:.2f} m")
 
     def decode_image(self, img_data):
-        """Decode compressed image data."""
         np_arr = np.frombuffer(img_data, np.uint8)
         img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        if img is not None:
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        return img
+        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if img is not None else None
 
     def update_pwm_gain(self, value):
-        """Update PWM gain based on slider."""
         self.pwm_gain = int(value)
-        msg = UInt16()
-        msg.data = self.pwm_gain
-        self.pwm_gain_pub.publish(msg)
-        self.get_logger().info(f"Updated PWM Gain to {self.pwm_gain}")
+        self.pwm_gain_pub.publish(UInt16(data=self.pwm_gain))
 
     def update_depth(self, value):
-        """Update desired depth based on slider."""
-        depth = Float64()
-        depth.data = float(value)
-        self.depth_controller_pub.publish(depth)
-        self.get_logger().info(f"Updated Depth to {depth.data}")
+        self.depth_controller_pub.publish(Float64(data=float(value)))
 
     def arm(self):
-        """Arm the robot."""
-        msg = Bool()
-        msg.data = True
-        self.arm_pub.publish(msg)
-        self.get_logger().info("ROV armed!")
+        self.arm_pub.publish(Bool(data=True))
 
     def disarm(self):
-        """Disarm the robot."""
-        msg = Bool()
-        msg.data = False
-        self.arm_pub.publish(msg)
-        self.get_logger().info("ROV disarmed!")
+        self.arm_pub.publish(Bool(data=False))
 
     def adjust_lights(self, direction):
-        """Adjust lights intensity."""
-        msg = UInt16()
-        if direction == "up":
-            msg.data = 1900
-        elif direction == "down":
-            msg.data = 1100
+        msg = UInt16(data=1900 if direction == "up" else 1100)
         self.lights_pub.publish(msg)
-        self.get_logger().info(f"Lights adjusted: {direction}")
 
     def adjust_gripper(self, direction):
-        """Adjust gripper position."""
-        msg = UInt16()
-        if direction == "open":
-            msg.data = 1900
-        elif direction == "close":
-            msg.data = 1100
+        msg = UInt16(data=1900 if direction == "open" else 1100)
         self.gripper_pub.publish(msg)
-        self.get_logger().info(f"Gripper adjusted: {direction}")
-
-    def move(self, direction):
-        """Control forward, backward, lateral, and yaw movements."""
-        msg = UInt16()
-        if direction == "forward":
-            msg.data = 1600
-            self.forward_pub.publish(msg)
-        elif direction == "backward":
-            msg.data = 1400
-            self.forward_pub.publish(msg)
-        elif direction == "left":
-            msg.data = 1400
-            self.lateral_pub.publish(msg)
-        elif direction == "right":
-            msg.data = 1600
-            self.lateral_pub.publish(msg)
-        elif direction == "yaw_left":
-            msg.data = 1400
-            self.yaw_pub.publish(msg)
-        elif direction == "yaw_right":
-            msg.data = 1600
-            self.yaw_pub.publish(msg)
-        self.get_logger().info(f"Movement {direction} executed")
 
     def switch_mode(self, mode):
-        """Switch between manual and ArUco modes."""
-        self.control_mode = mode
-        self.publish_control_mode()
-        self.get_logger().info(f"Switched to {mode} mode")
-
-    def publish_control_mode(self):
-        """Publish the current control mode."""
-        mode_msg = String()
-        mode_msg.data = self.control_mode
-        self.mode_pub.publish(mode_msg)
+        self.mode_pub.publish(String(data=mode))
 
 
 def main(args=None):
