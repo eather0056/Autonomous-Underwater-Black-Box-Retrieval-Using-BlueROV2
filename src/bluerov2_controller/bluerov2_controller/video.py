@@ -182,6 +182,13 @@ class Controller(Node):
 
     def draw_gui(self, img):
         height = img.shape[0]
+        width = img.shape[1]
+
+        # Draw red dot at the center of the image
+        center_x = width // 2
+        center_y = height // 2
+        cv2.circle(img, (center_x, center_y), 5, (0, 0, 255), -1)  # Red dot
+
         img = cv2.rectangle(img, (0, height - 100), (520, height), (0, 0, 0), -1)
         img = cv2.putText(img, f'Voltage: {self.voltage}V', (10, height - 70), self.font, 1.6, (255, 255, 255), 1)
         img = cv2.putText(img, f'Depth: {self.depth}m', (10, height - 45), self.font, 1.6, (255, 255, 255), 1)

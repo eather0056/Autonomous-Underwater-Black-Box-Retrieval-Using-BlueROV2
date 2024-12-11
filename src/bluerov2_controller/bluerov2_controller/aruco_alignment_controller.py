@@ -4,7 +4,7 @@ from rclpy.node import Node
 from pymavlink import mavutil
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Imu
-from std_msgs.msg import UInt16
+from std_msgs.msg import UInt16, Float64
 from scipy.spatial.transform import Rotation as R
 import math
 import time
@@ -16,6 +16,7 @@ class BlueROVController(Node):
 
         self.initialize_rc_defaults()
         self.initialize_publishers_and_subscribers()
+        self.initialize_parameters()
 
         # Timestamp for the last received marker pose
         self.last_pose_time = time.time()
@@ -45,8 +46,40 @@ class BlueROVController(Node):
         self.pose_sub = self.create_subscription(PoseStamped, "/aruco_pose", self.pose_callback, 10)
         self.imu_sub = self.create_subscription(Imu, "/bluerov2/imu/data", self.imu_callback, 10)
 
+        # Parameters from topics
+        self.create_subscription(Float64, "/settings/yaw/kp", lambda msg: self.update_param("yaw_kp", msg.data), 10)
+        self.create_subscription(Float64, "/settings/yaw/kd", lambda msg: self.update_param("yaw_kd", msg.data), 10)
+        self.create_subscription(Float64, "/settings/forward/kp", lambda msg: self.update_param("forward_kp", msg.data), 10)
+        self.create_subscription(Float64, "/settings/forward/kd", lambda msg: self.update_param("forward_kd", msg.data), 10)
+        self.create_subscription(Float64, "/settings/lateral/kp", lambda msg: self.update_param("lateral_kp", msg.data), 10)
+        self.create_subscription(Float64, "/settings/lateral/kd", lambda msg: self.update_param("lateral_kd", msg.data), 10)
+        self.create_subscription(Float64, "/settings/throttle/kp", lambda msg: self.update_param("throttle_kp", msg.data), 10)
+        self.create_subscription(Float64, "/settings/throttle/kd", lambda msg: self.update_param("throttle_kd", msg.data), 10)
+        self.create_subscription(Float64, "/setings/forward_Offset_correction", lambda msg: self.update_param("forward_Offset_correction", msg.data), 10)
+        self.create_subscription(Float64, "/setings/yaw_Offset_correction", lambda msg: self.update_param("yaw_Offset_correction", msg.data), 10)
+        self.create_subscription(Float64, "/setings/lateral_Offset_correction", lambda msg: self.update_param("lateral_Offset_correction", msg.data), 10)
+
         # IMU yaw initialization
         self.current_imu_yaw = 0.0
+
+    def initialize_parameters(self):
+        """Initialize default parameters."""
+        self.yaw_kp = 40
+        self.yaw_kd = 20
+        self.forward_kp = 79
+        self.forward_kd = 30
+        self.lateral_kp = 30
+        self.lateral_kd = 5
+        self.throttle_kp = 200
+        self.throttle_kd = 30
+        self.forward_Offset_correction = 0.7
+        self.yaw_Offset_correction = -10
+        self.lateral_Offset_correction = 0.4
+
+    def update_param(self, param_name, value):
+        """Update parameter value dynamically."""
+        setattr(self, param_name, value)
+        self.get_logger().info(f"Updated {param_name} to {value}")
 
     def imu_callback(self, msg):
         """Callback to process IMU data and extract yaw."""
@@ -59,12 +92,9 @@ class BlueROVController(Node):
         """Callback to handle ArUco pose data."""
         self.last_pose_time = time.time()
         self.marker_detected = True
-        forward_Offset_correction = 0.7
-        yaw_Offset_correction = -10
-        lateral_Offset_correction = 0.4
 
         forward_distance = msg.pose.position.z
-        lateral_offset = msg.pose.position.x - lateral_Offset_correction
+        lateral_offset = msg.pose.position.x - self.lateral_Offset_correction
         lateral_offset_yaw = msg.pose.position.x
         vertical_offset = -msg.pose.position.y
 
@@ -72,36 +102,40 @@ class BlueROVController(Node):
             self.initialize_pid_errors()
 
         # Calculate target yaw and yaw error
-        # Offset correction (if needed)
-        offset_angle = math.radians(yaw_Offset_correction)  # Adjust offset to observed error
+        offset_angle = math.radians(self.yaw_Offset_correction)  # Adjust offset to observed error
         target_yaw = math.atan2(lateral_offset_yaw, forward_distance) - offset_angle
         yaw_error = self.normalize_angle(target_yaw - self.current_imu_yaw)
 
         # PID control for yaw
-        yaw = self.calculate_pid(yaw_error, "yaw", kp=40, kd=20, base_pwm=1500)
+        yaw = self.calculate_pid(yaw_error, "yaw", kp=self.yaw_kp, kd=self.yaw_kd, base_pwm=1500)
 
         # Forward PID control
-        forward_error = forward_distance - forward_Offset_correction
-        forward = self.calculate_pid(forward_error, "forward", kp=79, kd=30, base_pwm=1500)
+        forward_error = forward_distance - self.forward_Offset_correction
+        forward = self.calculate_pid(forward_error, "forward", kp=self.forward_kp, kd=self.forward_kd, base_pwm=1500)
 
         # Lateral PID control
-        lateral = self.calculate_pid(lateral_offset, "lateral", kp=30, kd=5, base_pwm=1500)
+        lateral = self.calculate_pid(lateral_offset, "lateral", kp=self.lateral_kp, kd=self.lateral_kd, base_pwm=1500)
 
         # Vertical PID control
-        throttle = self.calculate_pid(vertical_offset, "vertical", kp=200, kd=30, base_pwm=1500)
+        throttle = self.calculate_pid(vertical_offset, "vertical", kp=self.throttle_kp, kd=self.throttle_kd, base_pwm=1500)
 
         # Publish control signals
         self.forward_pub.publish(UInt16(data=forward))
         self.lateral_pub.publish(UInt16(data=lateral))
         self.yaw_pub.publish(UInt16(data=yaw))
 
+        # Log debug information
+        self.get_logger().info(
+            f"Aruco Mode: Forward={forward}, Lateral={lateral}, Throttle={throttle}, Yaw={yaw} "
+            f"(Yaw Error={yaw_error:.2f}, Forward Error={forward_error:.2f}, Lateral Error={lateral_offset_yaw:.2f}, Vertical Error={vertical_offset:.2f})"
+        )
 
     def calculate_pid(self, error, pid_type, kp, kd, base_pwm):
         """Calculate PID control output."""
         integral_key = f"{pid_type}_integral_error"
         prev_error_key = f"prev_{pid_type}_error"
 
-        integral_error = getattr(self, integral_key)
+        integral_error = getattr(self, integral_key, 0.0)
         integral_error += error
         delta_error = error - getattr(self, prev_error_key, 0.0)
 

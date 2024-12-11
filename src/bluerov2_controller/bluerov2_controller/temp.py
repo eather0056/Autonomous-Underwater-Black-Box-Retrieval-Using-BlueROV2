@@ -7,10 +7,6 @@ from std_msgs.msg import UInt16, Float64, Bool, String, Float32
 from sensor_msgs.msg import CompressedImage, Image
 import cv2
 import numpy as np
-from sensor_msgs.msg import BatteryState
-from bluerov2_interfaces.msg import Bar30
-from bluerov2_interfaces.msg import Attitude
-import json
 
 
 class GUIController(Node):
@@ -26,13 +22,6 @@ class GUIController(Node):
         self.control_mode = "manual"
         self.aruco_distance = 0.0  # Initial distance
 
-        self.voltage = 0.0
-        self.depth = 0.0
-        self.depth_desired = 0.0
-        self.pitch = 0.0
-        self.yaw = 0.0
-        self.roll = 0.0
-
         # Publishers
         self.pwm_gain_pub = self.create_publisher(UInt16, "/settings/pwm_gain", 10)
         self.depth_controller_pub = self.create_publisher(Float64, "/settings/depth/set_depth", 10)
@@ -43,6 +32,7 @@ class GUIController(Node):
         self.forward_pub = self.create_publisher(UInt16, "/bluerov2/rc/forward", 10)
         self.lateral_pub = self.create_publisher(UInt16, "/bluerov2/rc/lateral", 10)
         self.yaw_pub = self.create_publisher(UInt16, "/bluerov2/rc/yaw", 10)
+        self.camera_tilt_pub = self.create_publisher(UInt16, "/bluerov2/rc/camera_tilt", 10)
 
         self.yaw_kp_pub = self.create_publisher(Float64, "/settings/yaw/kp", 10)
         self.yaw_kd_pub = self.create_publisher(Float64, "/settings/yaw/kd", 10)
@@ -90,14 +80,9 @@ class GUIController(Node):
         self.detected_image_canvas.grid(row=1, column=1, padx=5, pady=5)
 
         # Subscribers for images
-        self.create_subscription(Image, "/camera/image_raw/compressed", self.update_normal_image, 10)
+        self.create_subscription(CompressedImage, "/camera/image_raw/compressed", self.update_normal_image, 10)
         self.create_subscription(CompressedImage, "/aruco_detected_image", self.update_detected_image, 10)
         self.create_subscription(Float32, "/aruco_distance", self.update_aruco_distance, 10)
-
-        self.battery_sub = self.create_subscription(BatteryState, "/bluerov2/battery", self.battery_callback, 10)
-        self.depth_desired_sub = self.create_subscription(String, "/settings/depth/status", self.depth_desired_callback, 10)
-        self.bar30_sub = self.create_subscription(Bar30, "/bluerov2/bar30", self.callback_bar30, 10)
-        self.attitude_sub = self.create_subscription(Attitude, "/bluerov2/attitude", self.callback_att, 10)
 
         # Display for ArUco Distance
         Label(self.control_frame, text="ArUco Distance (m)", bg="#f0f0f0", font=("Helvetica", 12, "bold")).grid(row=6, column=0, sticky="w", padx=5, pady=5)
@@ -149,28 +134,6 @@ class GUIController(Node):
         # Movement and Control Buttons
         self.create_movement_buttons()
 
-        # Data display section
-        self.data_frame = Frame(self.root, bg="#f0f0f0")
-        self.data_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
-
-        self.voltage_label = Label(self.data_frame, text=f"Voltage: {self.voltage}V", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.voltage_label.grid(row=0, column=0, padx=5, pady=5)
-
-        self.depth_label = Label(self.data_frame, text=f"Depth: {self.depth}m", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.depth_label.grid(row=0, column=1, padx=5, pady=5)
-
-        self.depth_desired_label = Label(self.data_frame, text=f"Target Depth: {self.depth_desired}m", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.depth_desired_label.grid(row=0, column=2, padx=5, pady=5)
-
-        self.pitch_label = Label(self.data_frame, text=f"Pitch: {self.pitch}", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.pitch_label.grid(row=1, column=0, padx=5, pady=5)
-
-        self.roll_label = Label(self.data_frame, text=f"Roll: {self.roll}", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.roll_label.grid(row=1, column=1, padx=5, pady=5)
-
-        self.yaw_label = Label(self.data_frame, text=f"Yaw: {self.yaw}", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.yaw_label.grid(row=1, column=2, padx=5, pady=5)
-
         self.root.mainloop()
 
     def create_movement_buttons(self):
@@ -206,7 +169,7 @@ class GUIController(Node):
                 font=("Helvetica", 10),
                 width=15,
             )
-            btn.grid(row=i // 4, column=i % 4, padx=5, pady=5)  # Arrange in rows of 4
+            btn.grid(row=i // 6, column=i % 6, padx=5, pady=5)  # Arrange in rows of 4
             btn.bind("<ButtonPress>", lambda event, pub=publisher, val=value: self.send_movement_command(pub, val))
             btn.bind("<ButtonRelease>", lambda event, pub=publisher: self.stop_movement(pub))
 
@@ -220,7 +183,7 @@ class GUIController(Node):
                 bg=color,
                 font=("Helvetica", 10),
                 width=15,
-            ).grid(row=(len(movement_buttons) // 4) + (i // 4), column=i % 4, padx=5, pady=5)
+            ).grid(row=(len(movement_buttons) // 6) + (i // 6), column=i % 6, padx=5, pady=5)
 
     def add_slider(self, label, frame, from_, to, default, publisher, row, column):
         """Add a slider to the specified row and column."""
@@ -301,21 +264,6 @@ class GUIController(Node):
 
     def switch_mode(self, mode):
         self.mode_pub.publish(String(data=mode))
-
-    def battery_callback(self, msg):
-        self.voltage = round(msg.voltage, 2)
-
-    def depth_desired_callback(self, msg):
-        data = json.loads(msg.data)
-        self.depth_desired = abs(data['depth_desired'])
-
-    def callback_bar30(self, msg):
-        self.depth = round((msg.press_abs * 100 - self.p0) / (self.rho * self.g), 2)
-
-    def callback_att(self, msg):
-        self.roll = round(msg.roll, 3)
-        self.pitch = round(msg.pitch, 3)
-        self.yaw = round(msg.yaw, 3)
 
 
 def main(args=None):
