@@ -21,6 +21,11 @@ class BlueROVController(Node):
         # Timestamp for the last received marker pose
         self.last_pose_time = time.time()
         self.marker_detected = False
+        self.manual_override = False
+
+        # Track last forward distance
+        self.last_forward_distance = float('inf')
+        self.last_yaw_error = 0.0
 
         self.get_logger().info("BlueROV Controller Initialized.")
 
@@ -41,6 +46,7 @@ class BlueROVController(Node):
         self.forward_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/forward", 10)
         self.lateral_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/lateral", 10)
         self.yaw_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/yaw", 10)
+        self.gripper_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/gripper", 10)
 
         # Subscribers
         self.pose_sub = self.create_subscription(PoseStamped, "/aruco_pose", self.pose_callback, 10)
@@ -107,6 +113,7 @@ class BlueROVController(Node):
         yaw_error = self.normalize_angle(target_yaw - self.current_imu_yaw)
 
         # PID control for yaw
+        self.last_yaw_error = yaw_error
         yaw = self.calculate_pid(yaw_error, "yaw", kp=self.yaw_kp, kd=self.yaw_kd, base_pwm=1500)
 
         # Forward PID control
@@ -123,6 +130,10 @@ class BlueROVController(Node):
         self.forward_pub.publish(UInt16(data=forward))
         self.lateral_pub.publish(UInt16(data=lateral))
         self.yaw_pub.publish(UInt16(data=yaw))
+
+        # Open gripper if close enough to the target
+        if forward_distance <= 0.5:
+            self.grab_handle()
 
         # Log debug information
         self.get_logger().info(
@@ -170,15 +181,41 @@ class BlueROVController(Node):
         self.lateral_pub.publish(UInt16(data=1500))
         self.yaw_pub.publish(UInt16(data=1500))
 
+    # def monitor_marker(self):
+    #     """Monitor marker detection and stop movement if marker is lost."""
+    #     current_time = time.time()
+    #     if current_time - self.last_pose_time > 1.0:  # 1 second timeout
+    #         if self.marker_detected:
+    #             self.get_logger().warning("Marker lost. Stopping movement.")
+    #             self.marker_detected = False
+    #             self.initialize_pid_errors()
+    #             self.stop_movement()
+
     def monitor_marker(self):
         """Monitor marker detection and stop movement if marker is lost."""
         current_time = time.time()
         if current_time - self.last_pose_time > 1.0:  # 1 second timeout
             if self.marker_detected:
-                self.get_logger().warning("Marker lost. Stopping movement.")
+                self.get_logger().warning("Marker lost. Switching to approximate approach.")
                 self.marker_detected = False
-                self.initialize_pid_errors()
-                self.stop_movement()
+                self.manual_override = True
+                self.approach_target()
+
+    def approach_target(self):
+        """Approach the target when marker is lost."""
+        if self.last_forward_distance < 0.4:  # Only move forward if within a safe range
+            self.forward_pub.publish(UInt16(data=1530))
+            self.yaw_pub.publish(UInt16(data=self.calculate_pid(self.last_yaw_error, "yaw", kp=self.yaw_kp, kd=self.yaw_kd, base_pwm=1500)))
+            self.get_logger().info("Approaching target in blind mode with yaw holding.")
+        else:
+            self.get_logger().info("Target too far for safe approach. Holding position.")
+            self.initialize_pid_errors()
+            self.stop_movement()
+
+    def grab_handle(self):
+        """Activate the gripper to grab the handle."""
+        self.gripper_pub.publish(UInt16(data=1700))
+        self.get_logger().info("Gripper activated.")
 
 
 def main(args=None):

@@ -144,7 +144,7 @@ class GUIController(Node):
         self.add_slider("Throttle KD", self.control_frame, 0.0, 100.0, 30, self.throttle_kd_pub, 3, 2)
         self.add_slider("Forward Offset", self.control_frame, 0.0, 2.0, 0.7, self.forward_offset_pub, 4, 0)
         self.add_slider("Yaw Offset", self.control_frame, -20.0, 20.0, -10, self.yaw_offset_pub, 4, 2)
-        self.add_slider("Lateral Offset", self.control_frame, 0.0, 2.0, 0.4, self.lateral_offset_pub, 5, 0)
+        self.add_slider("Lateral Offset", self.control_frame, -2.0, 2.0, 0.4, self.lateral_offset_pub, 5, 0)
 
         # Movement and Control Buttons
         self.create_movement_buttons()
@@ -206,7 +206,7 @@ class GUIController(Node):
                 font=("Helvetica", 10),
                 width=15,
             )
-            btn.grid(row=i // 4, column=i % 4, padx=5, pady=5)  # Arrange in rows of 4
+            btn.grid(row=i // 6, column=i % 6, padx=5, pady=5)  # Arrange in rows of 4
             btn.bind("<ButtonPress>", lambda event, pub=publisher, val=value: self.send_movement_command(pub, val))
             btn.bind("<ButtonRelease>", lambda event, pub=publisher: self.stop_movement(pub))
 
@@ -220,7 +220,7 @@ class GUIController(Node):
                 bg=color,
                 font=("Helvetica", 10),
                 width=15,
-            ).grid(row=(len(movement_buttons) // 4) + (i // 4), column=i % 4, padx=5, pady=5)
+            ).grid(row=(len(movement_buttons) // 6) + (i // 6), column=i % 6, padx=5, pady=5)
 
     def add_slider(self, label, frame, from_, to, default, publisher, row, column):
         """Add a slider to the specified row and column."""

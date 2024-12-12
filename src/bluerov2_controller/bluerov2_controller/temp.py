@@ -1,275 +1,190 @@
-#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from tkinter import Tk, Scale, Button, Label, HORIZONTAL, Canvas, Frame
-from PIL import Image, ImageTk
-from std_msgs.msg import UInt16, Float64, Bool, String, Float32
-from sensor_msgs.msg import CompressedImage, Image
-import cv2
-import numpy as np
+from pymavlink import mavutil
+from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import Imu
+from std_msgs.msg import UInt16, Float64
+from scipy.spatial.transform import Rotation as R
+import math
+import time
 
-
-class GUIController(Node):
+class BlueROVController(Node):
     def __init__(self):
-        super().__init__("gui_controller")
+        super().__init__("aruco_controller")
 
-        # Setup default parameters
-        self.declare_parameter("pwm_gain", 200)
-        self.declare_parameter("gain_depth", 0.1)
+        self.initialize_rc_defaults()
+        self.initialize_publishers_and_subscribers()
+        self.initialize_parameters()
 
-        self.pwm_gain = self.get_parameter("pwm_gain").value
-        self.gain_depth = self.get_parameter("gain_depth").value
-        self.control_mode = "manual"
-        self.aruco_distance = 0.0  # Initial distance
+        # Timestamp for the last received marker pose
+        self.last_pose_time = time.time()
+        self.marker_detected = False
+        self.manual_override = False
 
+        # Track last forward distance and yaw error
+        self.last_forward_distance = float('inf')
+        self.last_yaw_error = 0.0
+
+        self.get_logger().info("BlueROV Controller Initialized.")
+
+    def initialize_rc_defaults(self):
+        """Initialize RC channel default values."""
+        self.gripper = 1500
+        self.pitch = 1500  # Unused for now
+        self.throttle = 1500
+        self.yaw = 1500
+        self.forward = 1500
+        self.lateral = 1500
+        self.lights = 1100
+        self.camera_tilt = 1500
+
+    def initialize_publishers_and_subscribers(self):
+        """Initialize ROS publishers and subscribers."""
         # Publishers
-        self.pwm_gain_pub = self.create_publisher(UInt16, "/settings/pwm_gain", 10)
-        self.depth_controller_pub = self.create_publisher(Float64, "/settings/depth/set_depth", 10)
-        self.mode_pub = self.create_publisher(String, "/settings/control_mode", 10)
-        self.arm_pub = self.create_publisher(Bool, "/bluerov2/arm", 10)
-        self.lights_pub = self.create_publisher(UInt16, "/bluerov2/rc/lights", 10)
-        self.gripper_pub = self.create_publisher(UInt16, "/bluerov2/rc/gripper", 10)
-        self.forward_pub = self.create_publisher(UInt16, "/bluerov2/rc/forward", 10)
-        self.lateral_pub = self.create_publisher(UInt16, "/bluerov2/rc/lateral", 10)
-        self.yaw_pub = self.create_publisher(UInt16, "/bluerov2/rc/yaw", 10)
-        self.camera_tilt_pub = self.create_publisher(UInt16, "/bluerov2/rc/camera_tilt", 10)
+        self.forward_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/forward", 10)
+        self.lateral_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/lateral", 10)
+        self.yaw_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/yaw", 10)
+        self.gripper_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/gripper", 10)
 
-        self.yaw_kp_pub = self.create_publisher(Float64, "/settings/yaw/kp", 10)
-        self.yaw_kd_pub = self.create_publisher(Float64, "/settings/yaw/kd", 10)
-        self.forward_kp_pub = self.create_publisher(Float64, "/settings/forward/kp", 10)
-        self.forward_kd_pub = self.create_publisher(Float64, "/settings/forward/kd", 10)
-        self.lateral_kp_pub = self.create_publisher(Float64, "/settings/lateral/kp", 10)
-        self.lateral_kd_pub = self.create_publisher(Float64, "/settings/lateral/kd", 10)
-        self.throttle_kp_pub = self.create_publisher(Float64, "/settings/throttle/kp", 10)
-        self.throttle_kd_pub = self.create_publisher(Float64, "/settings/throttle/kd", 10)
-        self.forward_offset_pub = self.create_publisher(Float64, "/setings/forward_Offset_correction", 10)
-        self.yaw_offset_pub = self.create_publisher(Float64, "/setings/yaw_Offset_correction", 10)
-        self.lateral_offset_pub = self.create_publisher(Float64, "/setings/lateral_Offset_correction", 10)
+        # Subscribers
+        self.pose_sub = self.create_subscription(PoseStamped, "/aruco_pose", self.pose_callback, 10)
+        self.imu_sub = self.create_subscription(Imu, "/bluerov2/imu/data", self.imu_callback, 10)
 
-        # Depth control variables
-        self.current_depth = 0.0
+        # Parameters from topics
+        self.create_subscription(Float64, "/settings/yaw/kp", lambda msg: self.update_param("yaw_kp", msg.data), 10)
+        self.create_subscription(Float64, "/settings/yaw/kd", lambda msg: self.update_param("yaw_kd", msg.data), 10)
+        self.create_subscription(Float64, "/settings/forward/kp", lambda msg: self.update_param("forward_kp", msg.data), 10)
+        self.create_subscription(Float64, "/settings/forward/kd", lambda msg: self.update_param("forward_kd", msg.data), 10)
+        self.create_subscription(Float64, "/setings/forward_Offset_correction", lambda msg: self.update_param("forward_Offset_correction", msg.data), 10)
 
-        # GUI setup
-        self.root = Tk()
-        self.root.title("BlueROV2 GUI Controller")
-        self.root.geometry("1200x800")  # Set window size
+        # IMU yaw initialization
+        self.current_imu_yaw = 0.0
 
-        # Configure grid weights for resizing
-        self.root.grid_rowconfigure(0, weight=1)  # Image frame row
-        self.root.grid_rowconfigure(1, weight=2)  # Control and button frames row
-        self.root.grid_columnconfigure(0, weight=1)  # Control frame column
-        self.root.grid_columnconfigure(1, weight=1)  # Button frame column
+    def initialize_parameters(self):
+        """Initialize default parameters."""
+        self.yaw_kp = 40
+        self.yaw_kd = 20
+        self.forward_kp = 79
+        self.forward_kd = 30
+        self.forward_Offset_correction = 0.7
 
-        # Frames for better layout
-        self.image_frame = Frame(self.root, bg="black")
-        self.image_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
+    def update_param(self, param_name, value):
+        """Update parameter value dynamically."""
+        setattr(self, param_name, value)
+        self.get_logger().info(f"Updated {param_name} to {value}")
 
-        self.control_frame = Frame(self.root, bg="#f0f0f0")
-        self.control_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+    def imu_callback(self, msg):
+        """Callback to process IMU data and extract yaw."""
+        quaternion = [msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w]
+        euler_angles = R.from_quat(quaternion).as_euler('xyz', degrees=False)
+        self.current_imu_yaw = euler_angles[2]
+        self.get_logger().info(f"IMU Yaw: {math.degrees(self.current_imu_yaw):.2f}°")
 
-        self.button_frame = Frame(self.root, bg="#f0f0f0")
-        self.button_frame.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
+    def pose_callback(self, msg):
+        """Callback to handle ArUco pose data."""
+        self.last_pose_time = time.time()
+        self.marker_detected = True
 
-        # Image display canvas
-        Label(self.image_frame, text="Normal Image", bg="black", fg="white", font=("Helvetica", 12, "bold")).grid(row=0, column=0, padx=5, pady=5)
-        self.normal_image_canvas = Canvas(self.image_frame, width=500, height=250, bg="black")
-        self.normal_image_canvas.grid(row=1, column=0, padx=5, pady=5)
+        forward_distance = msg.pose.position.z
+        lateral_offset = msg.pose.position.x
 
-        Label(self.image_frame, text="Detected Image", bg="black", fg="white", font=("Helvetica", 12, "bold")).grid(row=0, column=1, padx=5, pady=5)
-        self.detected_image_canvas = Canvas(self.image_frame, width=500, height=250, bg="black")
-        self.detected_image_canvas.grid(row=1, column=1, padx=5, pady=5)
+        self.last_forward_distance = forward_distance
 
-        # Subscribers for images
-        self.create_subscription(CompressedImage, "/camera/image_raw/compressed", self.update_normal_image, 10)
-        self.create_subscription(CompressedImage, "/aruco_detected_image", self.update_detected_image, 10)
-        self.create_subscription(Float32, "/aruco_distance", self.update_aruco_distance, 10)
+        if not hasattr(self, "yaw_integral_error"):
+            self.initialize_pid_errors()
 
-        # Display for ArUco Distance
-        Label(self.control_frame, text="ArUco Distance (m)", bg="#f0f0f0", font=("Helvetica", 12, "bold")).grid(row=6, column=0, sticky="w", padx=5, pady=5)
-        self.distance_label = Label(self.control_frame, text=f"Distance: {self.aruco_distance:.2f} m", bg="#f0f0f0", font=("Helvetica", 12), fg="blue")
-        self.distance_label.grid(row=6, column=1, padx=5, pady=5)
+        # PID control for yaw
+        yaw_error = self.normalize_angle(math.atan2(lateral_offset, forward_distance) - self.current_imu_yaw)
+        self.last_yaw_error = yaw_error
+        yaw = self.calculate_pid(yaw_error, "yaw", kp=self.yaw_kp, kd=self.yaw_kd, base_pwm=1500)
 
-        # Depth Control Slider
-        Label(self.control_frame, text="Depth Control", bg="#f0f0f0", font=("Helvetica", 12, "bold")).grid(row=7, column=0, sticky="w", padx=5, pady=5)
-        self.depth_slider = Scale(
-            self.control_frame,
-            from_=0.0,
-            to=-10.0,
-            resolution=0.1,
-            orient=HORIZONTAL,
-            command=self.update_depth,
-            length=200,
-            bg="lightgreen",
-        )
-        self.depth_slider.set(self.current_depth)
-        self.depth_slider.grid(row=7, column=1, padx=5, pady=5)
+        # Forward PID control
+        forward_error = forward_distance - self.forward_Offset_correction
+        forward = self.calculate_pid(forward_error, "forward", kp=self.forward_kp, kd=self.forward_kd, base_pwm=1500)
 
-        # PWM Gain Slider
-        Label(self.control_frame, text="PWM Gain", bg="#f0f0f0", font=("Helvetica", 12, "bold")).grid(row=8, column=0, sticky="w", padx=5, pady=5)
-        self.pwm_slider = Scale(
-            self.control_frame,
-            from_=100,
-            to=300,
-            orient=HORIZONTAL,
-            command=self.update_pwm_gain,
-            length=200,
-            bg="lightblue",
-        )
-        self.pwm_slider.set(self.pwm_gain)
-        self.pwm_slider.grid(row=8, column=1, padx=5, pady=5)
+        # Publish control signals
+        self.forward_pub.publish(UInt16(data=forward))
+        self.yaw_pub.publish(UInt16(data=yaw))
 
-        # Add sliders to the control frame
-        self.add_slider("Yaw KP", self.control_frame, 0.0, 100.0, 40, self.yaw_kp_pub, 0, 0)
-        self.add_slider("Yaw KD", self.control_frame, 0.0, 50.0, 20, self.yaw_kd_pub, 0, 2)
-        self.add_slider("Forward KP", self.control_frame, 0.0, 100.0, 79, self.forward_kp_pub, 1, 0)
-        self.add_slider("Forward KD", self.control_frame, 0.0, 50.0, 30, self.forward_kd_pub, 1, 2)
-        self.add_slider("Lateral KP", self.control_frame, 0.0, 50.0, 30, self.lateral_kp_pub, 2, 0)
-        self.add_slider("Lateral KD", self.control_frame, 0.0, 50.0, 5, self.lateral_kd_pub, 2, 2)
-        self.add_slider("Throttle KP", self.control_frame, 0.0, 300.0, 200, self.throttle_kp_pub, 3, 0)
-        self.add_slider("Throttle KD", self.control_frame, 0.0, 100.0, 30, self.throttle_kd_pub, 3, 2)
-        self.add_slider("Forward Offset", self.control_frame, 0.0, 2.0, 0.7, self.forward_offset_pub, 4, 0)
-        self.add_slider("Yaw Offset", self.control_frame, -20.0, 20.0, -10, self.yaw_offset_pub, 4, 2)
-        self.add_slider("Lateral Offset", self.control_frame, 0.0, 2.0, 0.4, self.lateral_offset_pub, 5, 0)
+        # Open gripper if close enough to the target
+        if forward_distance <= 0.5:
+            self.grab_handle()
 
-        # Movement and Control Buttons
-        self.create_movement_buttons()
+        self.get_logger().info(f"Aligning: Forward={forward}, Yaw={yaw}, Distance={forward_distance:.2f}m")
 
-        self.root.mainloop()
+    def calculate_pid(self, error, pid_type, kp, kd, base_pwm):
+        """Calculate PID control output."""
+        integral_key = f"{pid_type}_integral_error"
+        prev_error_key = f"prev_{pid_type}_error"
 
-    def create_movement_buttons(self):
-        # Movement buttons with press/release events
-        movement_buttons = [
-            ("Forward", self.forward_pub, 1600, "lightgreen"),
-            ("Backward", self.forward_pub, 1400, "lightgreen"),
-            ("Left", self.lateral_pub, 1400, "lightblue"),
-            ("Right", self.lateral_pub, 1600, "lightblue"),
-            ("Yaw Left", self.yaw_pub, 1400, "yellow"),
-            ("Yaw Right", self.yaw_pub, 1600, "yellow"),
-        ]
+        integral_error = getattr(self, integral_key, 0.0)
+        integral_error += error
+        delta_error = error - getattr(self, prev_error_key, 0.0)
 
-        # Static action buttons
-        action_buttons = [
-            ("Lights Up", lambda: self.adjust_lights("up"), "orange"),
-            ("Lights Down", lambda: self.adjust_lights("down"), "orange"),
-            ("Gripper Open", lambda: self.adjust_gripper("open"), "pink"),
-            ("Gripper Close", lambda: self.adjust_gripper("close"), "pink"),
-            ("Arm", self.arm, "red"),
-            ("Disarm", self.disarm, "red"),
-            ("Manual Mode", lambda: self.switch_mode("manual"), "purple"),
-            ("ArUco Mode", lambda: self.switch_mode("aruco"), "purple"),
-        ]
+        # PID formula
+        control = kp * error + kd * delta_error
+        pwm = self.clamp_rc_value(base_pwm + int(control))
 
-        # Place movement buttons in rows of 4
-        for i, button in enumerate(movement_buttons):
-            text, publisher, value, color = button
-            btn = Button(
-                self.button_frame,
-                text=text,
-                bg=color,
-                font=("Helvetica", 10),
-                width=15,
-            )
-            btn.grid(row=i // 6, column=i % 6, padx=5, pady=5)  # Arrange in rows of 4
-            btn.bind("<ButtonPress>", lambda event, pub=publisher, val=value: self.send_movement_command(pub, val))
-            btn.bind("<ButtonRelease>", lambda event, pub=publisher: self.stop_movement(pub))
+        # Update errors
+        setattr(self, integral_key, integral_error)
+        setattr(self, prev_error_key, error)
 
-        # Place action buttons in rows of 4 (starting below movement buttons)
-        for i, button in enumerate(action_buttons):
-            text, command, color = button
-            Button(
-                self.button_frame,
-                text=text,
-                command=command,
-                bg=color,
-                font=("Helvetica", 10),
-                width=15,
-            ).grid(row=(len(movement_buttons) // 6) + (i // 6), column=i % 6, padx=5, pady=5)
+        return pwm
 
-    def add_slider(self, label, frame, from_, to, default, publisher, row, column):
-        """Add a slider to the specified row and column."""
-        Label(frame, text=label, bg="#f0f0f0", font=("Helvetica", 12, "bold")).grid(row=row, column=column, sticky="w", padx=5, pady=5)
-        slider = Scale(
-            frame,
-            from_=from_,
-            to=to,
-            resolution=0.1,
-            orient=HORIZONTAL,
-            command=lambda value: self.update_param(value, publisher),
-            length=200,  # Adjust the length to fit in the grid
-            bg="lightblue",
-        )
-        slider.set(default)
-        slider.grid(row=row, column=column + 1, padx=5, pady=5)
+    def initialize_pid_errors(self):
+        """Initialize PID error attributes."""
+        self.yaw_integral_error = 0.0
+        self.forward_integral_error = 0.0
 
-    def update_param(self, value, publisher):
-        """Publish the updated value to the specified topic."""
-        msg = Float64()
-        msg.data = float(value)
-        publisher.publish(msg)
-        self.get_logger().info(f"Updated {publisher.topic_name} to {value}")
+    def normalize_angle(self, angle):
+        """Normalize angle to [-pi, pi]."""
+        return (angle + math.pi) % (2 * math.pi) - math.pi
 
-    def send_movement_command(self, publisher, value):
-        msg = UInt16()
-        msg.data = value
-        publisher.publish(msg)
+    def clamp_rc_value(self, value):
+        """Clamp RC channel values to valid MAVLink range."""
+        return max(1100, min(1900, int(value)))
 
-    def stop_movement(self, publisher):
-        msg = UInt16()
-        msg.data = 1500
-        publisher.publish(msg)
+    def stop_movement(self):
+        """Stop all movements by setting RC values to neutral."""
+        self.forward_pub.publish(UInt16(data=1500))
+        self.yaw_pub.publish(UInt16(data=1500))
 
-    def update_normal_image(self, msg):
-        img = self.decode_image(msg.data)
-        if img is not None:
-            img_tk = ImageTk.PhotoImage(Image.fromarray(img))
-            self.normal_image_canvas.create_image(0, 0, anchor="nw", image=img_tk)
-            self.normal_image_canvas.image = img_tk
+    def monitor_marker(self):
+        """Monitor marker detection and stop movement if marker is lost."""
+        current_time = time.time()
+        if current_time - self.last_pose_time > 1.0:  # 1 second timeout
+            if self.marker_detected:
+                self.get_logger().warning("Marker lost. Switching to approximate approach.")
+                self.marker_detected = False
+                self.manual_override = True
+                self.approach_target()
 
-    def update_detected_image(self, msg):
-        img = self.decode_image(msg.data)
-        if img is not None:
-            img_tk = ImageTk.PhotoImage(Image.fromarray(img))
-            self.detected_image_canvas.create_image(0, 0, anchor="nw", image=img_tk)
-            self.detected_image_canvas.image = img_tk
+    def approach_target(self):
+        """Approach the target when marker is lost."""
+        if self.last_forward_distance < 0.4:  # Only move forward if within a safe range
+            self.forward_pub.publish(UInt16(data=1600))
+            self.yaw_pub.publish(UInt16(data=self.calculate_pid(self.last_yaw_error, "yaw", kp=self.yaw_kp, kd=self.yaw_kd, base_pwm=1500)))
+            self.get_logger().info("Approaching target in manual mode with yaw holding.")
+        else:
+            self.get_logger().info("Target too far for safe approach. Holding position.")
 
-    def update_aruco_distance(self, msg):
-        self.aruco_distance = msg.data
-        self.distance_label.config(text=f"Distance: {self.aruco_distance:.2f} m")
-
-    def decode_image(self, img_data):
-        np_arr = np.frombuffer(img_data, np.uint8)
-        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if img is not None else None
-
-    def update_pwm_gain(self, value):
-        self.pwm_gain = int(value)
-        self.pwm_gain_pub.publish(UInt16(data=self.pwm_gain))
-
-    def update_depth(self, value):
-        self.depth_controller_pub.publish(Float64(data=float(value)))
-
-    def arm(self):
-        self.arm_pub.publish(Bool(data=True))
-
-    def disarm(self):
-        self.arm_pub.publish(Bool(data=False))
-
-    def adjust_lights(self, direction):
-        msg = UInt16(data=1900 if direction == "up" else 1100)
-        self.lights_pub.publish(msg)
-
-    def adjust_gripper(self, direction):
-        msg = UInt16(data=1900 if direction == "open" else 1100)
-        self.gripper_pub.publish(msg)
-
-    def switch_mode(self, mode):
-        self.mode_pub.publish(String(data=mode))
+    def grab_handle(self):
+        """Activate the gripper to grab the handle."""
+        self.gripper_pub.publish(UInt16(data=1900))
+        self.get_logger().info("Gripper activated.")
 
 
 def main(args=None):
     rclpy.init(args=args)
-    gui_node = GUIController()
-    gui_node.destroy_node()
+    node = BlueROVController()
+
+    def timer_callback():
+        node.monitor_marker()
+
+    node.create_timer(0.1, timer_callback)  # Check for marker timeout every 100ms
+
+    rclpy.spin(node)
+    node.destroy_node()
     rclpy.shutdown()
 
 
