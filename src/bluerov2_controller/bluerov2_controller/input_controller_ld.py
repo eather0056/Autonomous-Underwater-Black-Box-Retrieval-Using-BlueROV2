@@ -25,7 +25,7 @@ class Controller(Node):
         self.declare_parameter("gain_pwm_cam", 400)     
         self.declare_parameter("gain_pwm_lights", 50)
         self.declare_parameter("gain_pwm_gripper", 100)
-        self.declare_parameter("gain_depth", 0.05)
+        self.declare_parameter("gain_depth", 0.01)
         self.declare_parameter("arm_status", False)
         self.declare_parameter("debug", True)
 

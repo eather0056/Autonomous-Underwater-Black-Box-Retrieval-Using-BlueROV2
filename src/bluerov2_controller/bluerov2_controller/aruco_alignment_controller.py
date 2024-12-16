@@ -46,7 +46,7 @@ class BlueROVController(Node):
         self.forward_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/forward", 10)
         self.lateral_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/lateral", 10)
         self.yaw_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/yaw", 10)
-        self.gripper_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/gripper", 10)
+        self.gripper_pub = self.create_publisher(UInt16, "/bluerov2/rc/gripper", 10)
 
         # Subscribers
         self.pose_sub = self.create_subscription(PoseStamped, "/aruco_pose", self.pose_callback, 10)
@@ -72,15 +72,15 @@ class BlueROVController(Node):
         """Initialize default parameters."""
         self.yaw_kp = 40
         self.yaw_kd = 20
-        self.forward_kp = 79
+        self.forward_kp = 40
         self.forward_kd = 30
         self.lateral_kp = 30
         self.lateral_kd = 5
         self.throttle_kp = 200
         self.throttle_kd = 30
         self.forward_Offset_correction = 0.7
-        self.yaw_Offset_correction = -10
-        self.lateral_Offset_correction = 0.4
+        self.yaw_Offset_correction = 7.1
+        self.lateral_Offset_correction = -0.7
 
     def update_param(self, param_name, value):
         """Update parameter value dynamically."""
@@ -118,6 +118,7 @@ class BlueROVController(Node):
 
         # Forward PID control
         forward_error = forward_distance - self.forward_Offset_correction
+        self.last_forward_distance = forward_distance
         forward = self.calculate_pid(forward_error, "forward", kp=self.forward_kp, kd=self.forward_kd, base_pwm=1500)
 
         # Lateral PID control
@@ -132,7 +133,7 @@ class BlueROVController(Node):
         self.yaw_pub.publish(UInt16(data=yaw))
 
         # Open gripper if close enough to the target
-        if forward_distance <= 0.5:
+        if forward_distance <= 0.7:
             self.grab_handle()
 
         # Log debug information
@@ -203,9 +204,9 @@ class BlueROVController(Node):
 
     def approach_target(self):
         """Approach the target when marker is lost."""
-        if self.last_forward_distance < 0.4:  # Only move forward if within a safe range
+        if self.last_forward_distance < 0.6:  # Only move forward if within a safe range
             self.forward_pub.publish(UInt16(data=1530))
-            self.yaw_pub.publish(UInt16(data=self.calculate_pid(self.last_yaw_error, "yaw", kp=self.yaw_kp, kd=self.yaw_kd, base_pwm=1500)))
+            #self.yaw_pub.publish(UInt16(data=self.calculate_pid(self.last_yaw_error, "yaw", kp=self.yaw_kp, kd=self.yaw_kd, base_pwm=1500)))
             self.get_logger().info("Approaching target in blind mode with yaw holding.")
         else:
             self.get_logger().info("Target too far for safe approach. Holding position.")
@@ -214,7 +215,7 @@ class BlueROVController(Node):
 
     def grab_handle(self):
         """Activate the gripper to grab the handle."""
-        self.gripper_pub.publish(UInt16(data=1700))
+        self.gripper_pub.publish(UInt16(data=1580))
         self.get_logger().info("Gripper activated.")
 
 

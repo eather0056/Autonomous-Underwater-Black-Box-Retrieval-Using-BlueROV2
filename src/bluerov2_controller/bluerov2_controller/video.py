@@ -175,10 +175,10 @@ class Controller(Node):
         self.publisher_image.publish(compressed_image)
         self.publisher_cam_info.publish(self.camera_info_msg)
 
-        # Optionally display the image using OpenCV
-        cv2.imshow('BlueROV2 Camera', img)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            self.destroy_node()
+        # # Optionally display the image using OpenCV
+        # cv2.imshow('BlueROV2 Camera', img)
+        # if cv2.waitKey(1) & 0xFF == ord('q'):
+        #     self.destroy_node()
 
     def draw_gui(self, img):
         height = img.shape[0]

@@ -12,7 +12,6 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 from std_msgs.msg import Header
 
-
 class ArucoDetectionNode(Node):
     def __init__(self):
         super().__init__('aruco_detection_node')
@@ -40,28 +39,28 @@ class ArucoDetectionNode(Node):
 
         # Initialize ArUco dictionary
         ARUCO_DICT = {
-            "DICT_4X4_50": aruco.DICT_4X4_50,
-            "DICT_4X4_100": aruco.DICT_4X4_100,
-            "DICT_4X4_250": aruco.DICT_4X4_250,
-            "DICT_4X4_1000": aruco.DICT_4X4_1000,
-            "DICT_5X5_50": aruco.DICT_5X5_50,
-            "DICT_5X5_100": aruco.DICT_5X5_100,
-            "DICT_5X5_250": aruco.DICT_5X5_250,
-            "DICT_5X5_1000": aruco.DICT_5X5_1000,
-            "DICT_6X6_50": aruco.DICT_6X6_50,
-            "DICT_6X6_100": aruco.DICT_6X6_100,
-            "DICT_6X6_250": aruco.DICT_6X6_250,
-            "DICT_6X6_1000": aruco.DICT_6X6_1000,
-            "DICT_7X7_50": aruco.DICT_7X7_50,
-            "DICT_7X7_100": aruco.DICT_7X7_100,
-            "DICT_7X7_250": aruco.DICT_7X7_250,
-            "DICT_7X7_1000": aruco.DICT_7X7_1000,
-            "DICT_ARUCO_ORIGINAL": aruco.DICT_ARUCO_ORIGINAL,
+            "DICT_4X4_50": aruco.getPredefinedDictionary(aruco.DICT_4X4_50),
+            "DICT_4X4_100": aruco.getPredefinedDictionary(aruco.DICT_4X4_100),
+            "DICT_4X4_250": aruco.getPredefinedDictionary(aruco.DICT_4X4_250),
+            "DICT_4X4_1000": aruco.getPredefinedDictionary(aruco.DICT_4X4_1000),
+            "DICT_5X5_50": aruco.getPredefinedDictionary(aruco.DICT_5X5_50),
+            "DICT_5X5_100": aruco.getPredefinedDictionary(aruco.DICT_5X5_100),
+            "DICT_5X5_250": aruco.getPredefinedDictionary(aruco.DICT_5X5_250),
+            "DICT_5X5_1000": aruco.getPredefinedDictionary(aruco.DICT_5X5_1000),
+            "DICT_6X6_50": aruco.getPredefinedDictionary(aruco.DICT_6X6_50),
+            "DICT_6X6_100": aruco.getPredefinedDictionary(aruco.DICT_6X6_100),
+            "DICT_6X6_250": aruco.getPredefinedDictionary(aruco.DICT_6X6_250),
+            "DICT_6X6_1000": aruco.getPredefinedDictionary(aruco.DICT_6X6_1000),
+            "DICT_7X7_50": aruco.getPredefinedDictionary(aruco.DICT_7X7_50),
+            "DICT_7X7_100": aruco.getPredefinedDictionary(aruco.DICT_7X7_100),
+            "DICT_7X7_250": aruco.getPredefinedDictionary(aruco.DICT_7X7_250),
+            "DICT_7X7_1000": aruco.getPredefinedDictionary(aruco.DICT_7X7_1000),
+            "DICT_ARUCO_ORIGINAL": aruco.getPredefinedDictionary(aruco.DICT_ARUCO_ORIGINAL),
         }
 
         if self.aruco_dict_name in ARUCO_DICT:
-            self.aruco_dict = aruco.Dictionary_get(ARUCO_DICT[self.aruco_dict_name])
-            self.aruco_params = aruco.DetectorParameters_create()
+            self.aruco_dict = ARUCO_DICT[self.aruco_dict_name]
+            self.aruco_params = aruco.DetectorParameters()
         else:
             self.get_logger().error(f"ArUco dictionary '{self.aruco_dict_name}' not supported.")
             raise ValueError(f"ArUco dictionary '{self.aruco_dict_name}' not supported.")
@@ -96,18 +95,18 @@ class ArucoDetectionNode(Node):
             self.get_logger().error(f"Failed to decompress image: {e}")
             return
 
-        # Display the raw image
-        try:
-            if frame is not None:
-                cv2.imshow("Raw Image", frame)
-                cv2.waitKey(1)  # This allows OpenCV to update the display
-                self.get_logger().info("Displaying raw image.")
-            else:
-                self.get_logger().error("Frame is None. Unable to display the image.")
-                return
-        except Exception as e:
-            self.get_logger().error(f"Error displaying raw image: {e}")
-            return
+        # # Display the raw image
+        # try:
+        #     if frame is not None:
+        #         cv2.imshow("Raw Image", frame)
+        #         cv2.waitKey(1)  # This allows OpenCV to update the display
+        #         self.get_logger().info("Displaying raw image.")
+        #     else:
+        #         self.get_logger().error("Frame is None. Unable to display the image.")
+        #         return
+        # except Exception as e:
+        #     self.get_logger().error(f"Error displaying raw image: {e}")
+        #     return
 
         # Debug the size of the received image
         self.get_logger().info(f"Image shape: {frame.shape if frame is not None else 'None'}")
@@ -169,12 +168,12 @@ class ArucoDetectionNode(Node):
                 except Exception as e:
                     self.get_logger().error(f"Error drawing axis or markers: {e}")
 
-            # Display the result frame
-            try:
-                cv2.imshow("ArUco Detection", frame)
-                cv2.waitKey(1)
-            except Exception as e:
-                self.get_logger().error(f"Error displaying frame: {e}")
+            # # Display the result frame
+            # try:
+            #     # cv2.imshow("ArUco Detection", frame)
+            #     # cv2.waitKey(1)
+            # except Exception as e:
+            #     self.get_logger().error(f"Error displaying frame: {e}")
 
             # Publish the annotated image
             try:
@@ -218,7 +217,6 @@ class ArucoDetectionNode(Node):
             self.get_logger().error(f"Error converting rvec to quaternion: {e}")
             return [0.0, 0.0, 0.0, 1.0]
 
-
 def main(args=None):
     rclpy.init(args=args)
     node = ArucoDetectionNode()
@@ -229,7 +227,6 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()

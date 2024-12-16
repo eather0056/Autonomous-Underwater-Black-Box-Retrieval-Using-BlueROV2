@@ -1,39 +1,64 @@
 #!/usr/bin/env python3
+
+import sys
+import json
+import numpy as np
+import cv2
+
 import rclpy
 from rclpy.node import Node
-from tkinter import Tk, Scale, Button, Label, HORIZONTAL, Canvas, Frame
-from PIL import Image, ImageTk
+from rclpy.qos import QoSProfile
+
+from sensor_msgs.msg import CompressedImage, BatteryState
 from std_msgs.msg import UInt16, Float64, Bool, String, Float32
-from sensor_msgs.msg import CompressedImage, Image
-import cv2
-import numpy as np
-from sensor_msgs.msg import BatteryState
-from bluerov2_interfaces.msg import Bar30
-from bluerov2_interfaces.msg import Attitude
-import json
+from bluerov2_interfaces.msg import Bar30, Attitude
+
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QWidget,
+    QGridLayout,
+    QLabel,
+    QSlider,
+    QPushButton,
+    QFrame,
+)
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QImage, QPixmap
 
 
-class GUIController(Node):
+class GUIController(Node, QMainWindow):
     def __init__(self):
-        super().__init__("gui_controller")
+        Node.__init__(self, "gui_controller")
+        QMainWindow.__init__(self)
 
-        # Setup default parameters
+        # -------------------- Parameters and Defaults --------------------
         self.declare_parameter("pwm_gain", 200)
         self.declare_parameter("gain_depth", 0.1)
-
         self.pwm_gain = self.get_parameter("pwm_gain").value
         self.gain_depth = self.get_parameter("gain_depth").value
-        self.control_mode = "manual"
-        self.aruco_distance = 0.0  # Initial distance
 
+        # Control / State variables
+        self.control_mode = "manual"
+        self.aruco_distance = 0.0
         self.voltage = 0.0
         self.depth = 0.0
         self.depth_desired = 0.0
         self.pitch = 0.0
         self.yaw = 0.0
         self.roll = 0.0
+        self.current_depth = 0.0  # For initial slider position
 
-        # Publishers
+        # Constants for bar30 callback
+        self.rho = 997   # water density (kg/m^3)
+        self.g = 9.81
+        self.p0 = 101300
+
+        # Frame buffers for camera images
+        self.normal_image_cv = None
+        self.detected_image_cv = None
+
+        # -------------------- Publishers --------------------
         self.pwm_gain_pub = self.create_publisher(UInt16, "/settings/pwm_gain", 10)
         self.depth_controller_pub = self.create_publisher(Float64, "/settings/depth/set_depth", 10)
         self.mode_pub = self.create_publisher(String, "/settings/control_mode", 10)
@@ -44,6 +69,7 @@ class GUIController(Node):
         self.lateral_pub = self.create_publisher(UInt16, "/bluerov2/rc/lateral", 10)
         self.yaw_pub = self.create_publisher(UInt16, "/bluerov2/rc/yaw", 10)
 
+        # PID + offset publishers
         self.yaw_kp_pub = self.create_publisher(Float64, "/settings/yaw/kp", 10)
         self.yaw_kd_pub = self.create_publisher(Float64, "/settings/yaw/kd", 10)
         self.forward_kp_pub = self.create_publisher(Float64, "/settings/forward/kp", 10)
@@ -56,125 +82,108 @@ class GUIController(Node):
         self.yaw_offset_pub = self.create_publisher(Float64, "/setings/yaw_Offset_correction", 10)
         self.lateral_offset_pub = self.create_publisher(Float64, "/setings/lateral_Offset_correction", 10)
 
-        # Depth control variables
-        self.current_depth = 0.0
-
-        # GUI setup
-        self.root = Tk()
-        self.root.title("BlueROV2 GUI Controller")
-        self.root.geometry("1200x800")  # Set window size
-
-        # Configure grid weights for resizing
-        self.root.grid_rowconfigure(0, weight=1)  # Image frame row
-        self.root.grid_rowconfigure(1, weight=2)  # Control and button frames row
-        self.root.grid_columnconfigure(0, weight=1)  # Control frame column
-        self.root.grid_columnconfigure(1, weight=1)  # Button frame column
-
-        # Frames for better layout
-        self.image_frame = Frame(self.root, bg="black")
-        self.image_frame.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
-
-        self.control_frame = Frame(self.root, bg="#f0f0f0")
-        self.control_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
-
-        self.button_frame = Frame(self.root, bg="#f0f0f0")
-        self.button_frame.grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
-
-        # Image display canvas
-        Label(self.image_frame, text="Normal Image", bg="black", fg="white", font=("Helvetica", 12, "bold")).grid(row=0, column=0, padx=5, pady=5)
-        self.normal_image_canvas = Canvas(self.image_frame, width=500, height=250, bg="black")
-        self.normal_image_canvas.grid(row=1, column=0, padx=5, pady=5)
-
-        Label(self.image_frame, text="Detected Image", bg="black", fg="white", font=("Helvetica", 12, "bold")).grid(row=0, column=1, padx=5, pady=5)
-        self.detected_image_canvas = Canvas(self.image_frame, width=500, height=250, bg="black")
-        self.detected_image_canvas.grid(row=1, column=1, padx=5, pady=5)
-
-        # Subscribers for images
-        self.create_subscription(Image, "/camera/image_raw/compressed", self.update_normal_image, 10)
-        self.create_subscription(CompressedImage, "/aruco_detected_image", self.update_detected_image, 10)
+        # -------------------- Subscribers --------------------
+        self.create_subscription(CompressedImage, "/camera/image_raw/compressed", self.normal_image_callback, 10)
+        self.create_subscription(CompressedImage, "/aruco_detected_image", self.detected_image_callback, 10)
         self.create_subscription(Float32, "/aruco_distance", self.update_aruco_distance, 10)
+        self.create_subscription(BatteryState, "/bluerov2/battery", self.battery_callback, 10)
+        self.create_subscription(String, "/settings/depth/status", self.depth_desired_callback, 10)
+        self.create_subscription(Bar30, "/bluerov2/bar30", self.callback_bar30, 10)
+        self.create_subscription(Attitude, "/bluerov2/attitude", self.callback_att, 10)
 
-        self.battery_sub = self.create_subscription(BatteryState, "/bluerov2/battery", self.battery_callback, 10)
-        self.depth_desired_sub = self.create_subscription(String, "/settings/depth/status", self.depth_desired_callback, 10)
-        self.bar30_sub = self.create_subscription(Bar30, "/bluerov2/bar30", self.callback_bar30, 10)
-        self.attitude_sub = self.create_subscription(Attitude, "/bluerov2/attitude", self.callback_att, 10)
+        # -------------------- PyQt5 GUI Layout --------------------
+        self.setWindowTitle("BlueROV2 GUI Controller")
+        self.resize(1200, 800)
 
-        # Display for ArUco Distance
-        Label(self.control_frame, text="ArUco Distance (m)", bg="#f0f0f0", font=("Helvetica", 12, "bold")).grid(row=6, column=0, sticky="w", padx=5, pady=5)
-        self.distance_label = Label(self.control_frame, text=f"Distance: {self.aruco_distance:.2f} m", bg="#f0f0f0", font=("Helvetica", 12), fg="blue")
-        self.distance_label.grid(row=6, column=1, padx=5, pady=5)
+        central_widget = QWidget(self)
+        self.setCentralWidget(central_widget)
+        main_layout = QGridLayout(central_widget)
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setSpacing(10)
 
-        # Depth Control Slider
-        Label(self.control_frame, text="Depth Control", bg="#f0f0f0", font=("Helvetica", 12, "bold")).grid(row=7, column=0, sticky="w", padx=5, pady=5)
-        self.depth_slider = Scale(
-            self.control_frame,
-            from_=0.0,
-            to=-10.0,
-            resolution=0.1,
-            orient=HORIZONTAL,
-            command=self.update_depth,
-            length=200,
-            bg="lightgreen",
+        # Image frame
+        image_frame = QFrame()
+        image_frame_layout = QGridLayout(image_frame)
+        main_layout.addWidget(image_frame, 0, 0, 1, 2)
+
+        label_normal = QLabel("Normal Image")
+        label_normal.setStyleSheet("color: white; background-color: black; font: bold 12px;")
+        image_frame_layout.addWidget(label_normal, 0, 0)
+
+        self.normal_image_label = QLabel()
+        self.normal_image_label.setFixedSize(640, 480)
+        self.normal_image_label.setScaledContents(True)  # scale/shrink to fit
+        self.normal_image_label.setStyleSheet("background-color: black;")
+        image_frame_layout.addWidget(self.normal_image_label, 1, 0)
+
+        label_detected = QLabel("Detected Image")
+        label_detected.setStyleSheet("color: white; background-color: black; font: bold 12px;")
+        image_frame_layout.addWidget(label_detected, 0, 1)
+
+        self.detected_image_label = QLabel()
+        self.detected_image_label.setFixedSize(640, 480)
+        self.detected_image_label.setScaledContents(True)
+        self.detected_image_label.setStyleSheet("background-color: black;")
+        image_frame_layout.addWidget(self.detected_image_label, 1, 1)
+
+        # Control frame (bottom-left)
+        control_frame = QFrame()
+        control_frame_layout = QGridLayout(control_frame)
+        control_frame.setStyleSheet("background-color: #f0f0f0;")
+        main_layout.addWidget(control_frame, 1, 0)
+
+        # Button frame (bottom-right)
+        button_frame = QFrame()
+        button_frame_layout = QGridLayout(button_frame)
+        button_frame.setStyleSheet("background-color: #f0f0f0;")
+        main_layout.addWidget(button_frame, 1, 1)
+
+        # Distance
+        distance_title = QLabel("ArUco Distance (m)")
+        distance_title.setStyleSheet("font: bold 12px; background-color: #f0f0f0;")
+        control_frame_layout.addWidget(distance_title, 6, 0)
+
+        self.distance_label = QLabel(f"Distance: {self.aruco_distance:.2f} m")
+        self.distance_label.setStyleSheet("color: blue; font: 12px; background-color: #f0f0f0;")
+        control_frame_layout.addWidget(self.distance_label, 6, 1)
+
+        # -------------------- Sliders via add_slider --------------------
+        # We reuse add_slider for Depth Control and PWM Gain too.
+
+        # Depth Control (slider range -10.0 to 0.0)
+        self.add_slider(
+            label_text="Depth Control",
+            layout=control_frame_layout,
+            row=7, col=0,
+            from_=-10.0, to=0.0,
+            default=self.current_depth,
+            publish_type="depth"  # We'll handle it specially in callback
         )
-        self.depth_slider.set(self.current_depth)
-        self.depth_slider.grid(row=7, column=1, padx=5, pady=5)
 
-        # PWM Gain Slider
-        Label(self.control_frame, text="PWM Gain", bg="#f0f0f0", font=("Helvetica", 12, "bold")).grid(row=8, column=0, sticky="w", padx=5, pady=5)
-        self.pwm_slider = Scale(
-            self.control_frame,
-            from_=100,
-            to=300,
-            orient=HORIZONTAL,
-            command=self.update_pwm_gain,
-            length=200,
-            bg="lightblue",
+        # PWM Gain (slider range 100 to 300)
+        self.add_slider(
+            label_text="PWM Gain",
+            layout=control_frame_layout,
+            row=8, col=0,
+            from_=100.0, to=300.0,
+            default=float(self.pwm_gain),
+            publish_type="pwm"
         )
-        self.pwm_slider.set(self.pwm_gain)
-        self.pwm_slider.grid(row=8, column=1, padx=5, pady=5)
 
-        # Add sliders to the control frame
-        self.add_slider("Yaw KP", self.control_frame, 0.0, 100.0, 40, self.yaw_kp_pub, 0, 0)
-        self.add_slider("Yaw KD", self.control_frame, 0.0, 50.0, 20, self.yaw_kd_pub, 0, 2)
-        self.add_slider("Forward KP", self.control_frame, 0.0, 100.0, 79, self.forward_kp_pub, 1, 0)
-        self.add_slider("Forward KD", self.control_frame, 0.0, 50.0, 30, self.forward_kd_pub, 1, 2)
-        self.add_slider("Lateral KP", self.control_frame, 0.0, 50.0, 30, self.lateral_kp_pub, 2, 0)
-        self.add_slider("Lateral KD", self.control_frame, 0.0, 50.0, 5, self.lateral_kd_pub, 2, 2)
-        self.add_slider("Throttle KP", self.control_frame, 0.0, 300.0, 200, self.throttle_kp_pub, 3, 0)
-        self.add_slider("Throttle KD", self.control_frame, 0.0, 100.0, 30, self.throttle_kd_pub, 3, 2)
-        self.add_slider("Forward Offset", self.control_frame, 0.0, 2.0, 0.7, self.forward_offset_pub, 4, 0)
-        self.add_slider("Yaw Offset", self.control_frame, -20.0, 20.0, -10, self.yaw_offset_pub, 4, 2)
-        self.add_slider("Lateral Offset", self.control_frame, -2.0, 2.0, 0.4, self.lateral_offset_pub, 5, 0)
+        # The rest of the PID / offset sliders
+        self.add_slider("Yaw KP", control_frame_layout, row=0, col=0, from_=0.0, to=100.0, default=40.0, publish_type="float64", publisher=self.yaw_kp_pub)
+        self.add_slider("Yaw KD", control_frame_layout, row=0, col=3, from_=0.0, to=50.0, default=20.0, publish_type="float64", publisher=self.yaw_kd_pub)
+        self.add_slider("Forward KP", control_frame_layout, row=1, col=0, from_=0.0, to=100.0, default=79.0, publish_type="float64", publisher=self.forward_kp_pub)
+        self.add_slider("Forward KD", control_frame_layout, row=1, col=3, from_=0.0, to=50.0, default=30.0, publish_type="float64", publisher=self.forward_kd_pub)
+        self.add_slider("Lateral KP", control_frame_layout, row=2, col=0, from_=0.0, to=50.0, default=30.0, publish_type="float64", publisher=self.lateral_kp_pub)
+        self.add_slider("Lateral KD", control_frame_layout, row=2, col=3, from_=0.0, to=50.0, default=5.0, publish_type="float64", publisher=self.lateral_kd_pub)
+        self.add_slider("Throttle KP", control_frame_layout, row=3, col=0, from_=0.0, to=300.0, default=200.0, publish_type="float64", publisher=self.throttle_kp_pub)
+        self.add_slider("Throttle KD", control_frame_layout, row=3, col=3, from_=0.0, to=100.0, default=30.0, publish_type="float64", publisher=self.throttle_kd_pub)
+        self.add_slider("Forward Offset", control_frame_layout, row=4, col=0, from_=0.0, to=2.0, default=0.7, publish_type="float64", publisher=self.forward_offset_pub)
+        self.add_slider("Yaw Offset", control_frame_layout, row=4, col=3, from_=-20.0, to=20.0, default=-10.0, publish_type="float64", publisher=self.yaw_offset_pub)
+        self.add_slider("Lateral Offset", control_frame_layout, row=5, col=0, from_=-2.0, to=2.0, default=0.4, publish_type="float64", publisher=self.lateral_offset_pub)
 
-        # Movement and Control Buttons
-        self.create_movement_buttons()
-
-        # Data display section
-        self.data_frame = Frame(self.root, bg="#f0f0f0")
-        self.data_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", padx=10, pady=10)
-
-        self.voltage_label = Label(self.data_frame, text=f"Voltage: {self.voltage}V", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.voltage_label.grid(row=0, column=0, padx=5, pady=5)
-
-        self.depth_label = Label(self.data_frame, text=f"Depth: {self.depth}m", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.depth_label.grid(row=0, column=1, padx=5, pady=5)
-
-        self.depth_desired_label = Label(self.data_frame, text=f"Target Depth: {self.depth_desired}m", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.depth_desired_label.grid(row=0, column=2, padx=5, pady=5)
-
-        self.pitch_label = Label(self.data_frame, text=f"Pitch: {self.pitch}", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.pitch_label.grid(row=1, column=0, padx=5, pady=5)
-
-        self.roll_label = Label(self.data_frame, text=f"Roll: {self.roll}", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.roll_label.grid(row=1, column=1, padx=5, pady=5)
-
-        self.yaw_label = Label(self.data_frame, text=f"Yaw: {self.yaw}", bg="#f0f0f0", font=("Helvetica", 12), fg="black")
-        self.yaw_label.grid(row=1, column=2, padx=5, pady=5)
-
-        self.root.mainloop()
-
-    def create_movement_buttons(self):
-        # Movement buttons with press/release events
+        # -------------------- Movement & Action Buttons --------------------
         movement_buttons = [
             ("Forward", self.forward_pub, 1600, "lightgreen"),
             ("Backward", self.forward_pub, 1400, "lightgreen"),
@@ -183,8 +192,6 @@ class GUIController(Node):
             ("Yaw Left", self.yaw_pub, 1400, "yellow"),
             ("Yaw Right", self.yaw_pub, 1600, "yellow"),
         ]
-
-        # Static action buttons
         action_buttons = [
             ("Lights Up", lambda: self.adjust_lights("up"), "orange"),
             ("Lights Down", lambda: self.adjust_lights("down"), "orange"),
@@ -196,55 +203,163 @@ class GUIController(Node):
             ("ArUco Mode", lambda: self.switch_mode("aruco"), "purple"),
         ]
 
-        # Place movement buttons in rows of 4
-        for i, button in enumerate(movement_buttons):
-            text, publisher, value, color = button
-            btn = Button(
-                self.button_frame,
-                text=text,
-                bg=color,
-                font=("Helvetica", 10),
-                width=15,
-            )
-            btn.grid(row=i // 6, column=i % 6, padx=5, pady=5)  # Arrange in rows of 4
-            btn.bind("<ButtonPress>", lambda event, pub=publisher, val=value: self.send_movement_command(pub, val))
-            btn.bind("<ButtonRelease>", lambda event, pub=publisher: self.stop_movement(pub))
+        for i, (text, pub, val, color) in enumerate(movement_buttons):
+            btn = QPushButton(text)
+            btn.setStyleSheet(f"background-color: {color}; font: 10px;")
+            btn.setFixedWidth(130)
+            btn.pressed.connect(lambda pub=pub, val=val: self.send_movement_command(pub, val))
+            btn.released.connect(lambda pub=pub: self.stop_movement(pub))
+            button_frame_layout.addWidget(btn, i // 6, i % 6)
 
-        # Place action buttons in rows of 4 (starting below movement buttons)
-        for i, button in enumerate(action_buttons):
-            text, command, color = button
-            Button(
-                self.button_frame,
-                text=text,
-                command=command,
-                bg=color,
-                font=("Helvetica", 10),
-                width=15,
-            ).grid(row=(len(movement_buttons) // 6) + (i // 6), column=i % 6, padx=5, pady=5)
+        base_row = len(movement_buttons) // 6
+        for i, (text, callback, color) in enumerate(action_buttons):
+            btn = QPushButton(text)
+            btn.setStyleSheet(f"background-color: {color}; font: 10px;")
+            btn.setFixedWidth(130)
+            btn.clicked.connect(callback)
+            row = base_row + (i // 6)
+            col = i % 6
+            button_frame_layout.addWidget(btn, row, col)
 
-    def add_slider(self, label, frame, from_, to, default, publisher, row, column):
-        """Add a slider to the specified row and column."""
-        Label(frame, text=label, bg="#f0f0f0", font=("Helvetica", 12, "bold")).grid(row=row, column=column, sticky="w", padx=5, pady=5)
-        slider = Scale(
-            frame,
-            from_=from_,
-            to=to,
-            resolution=0.1,
-            orient=HORIZONTAL,
-            command=lambda value: self.update_param(value, publisher),
-            length=200,  # Adjust the length to fit in the grid
-            bg="lightblue",
-        )
-        slider.set(default)
-        slider.grid(row=row, column=column + 1, padx=5, pady=5)
+        # -------------------- Data Display Frame --------------------
+        data_frame = QFrame()
+        data_frame_layout = QGridLayout(data_frame)
+        data_frame.setStyleSheet("background-color: #f0f0f0;")
+        main_layout.addWidget(data_frame, 2, 0, 1, 2)
 
-    def update_param(self, value, publisher):
-        """Publish the updated value to the specified topic."""
-        msg = Float64()
-        msg.data = float(value)
-        publisher.publish(msg)
-        self.get_logger().info(f"Updated {publisher.topic_name} to {value}")
+        self.voltage_label = QLabel(f"Voltage: {self.voltage} V")
+        self.voltage_label.setStyleSheet("font: 12px; background-color: #f0f0f0;")
+        data_frame_layout.addWidget(self.voltage_label, 0, 0)
 
+        self.depth_label = QLabel(f"Depth: {self.depth} m")
+        self.depth_label.setStyleSheet("font: 12px; background-color: #f0f0f0;")
+        data_frame_layout.addWidget(self.depth_label, 0, 1)
+
+        self.depth_desired_label = QLabel(f"Target Depth: {self.depth_desired} m")
+        self.depth_desired_label.setStyleSheet("font: 12px; background-color: #f0f0f0;")
+        data_frame_layout.addWidget(self.depth_desired_label, 0, 2)
+
+        self.pitch_label = QLabel(f"Pitch: {self.pitch}")
+        self.pitch_label.setStyleSheet("font: 12px; background-color: #f0f0f0;")
+        data_frame_layout.addWidget(self.pitch_label, 1, 0)
+
+        self.roll_label = QLabel(f"Roll: {self.roll}")
+        self.roll_label.setStyleSheet("font: 12px; background-color: #f0f0f0;")
+        data_frame_layout.addWidget(self.roll_label, 1, 1)
+
+        self.yaw_label = QLabel(f"Yaw: {self.yaw}")
+        self.yaw_label.setStyleSheet("font: 12px; background-color: #f0f0f0;")
+        data_frame_layout.addWidget(self.yaw_label, 1, 2)
+
+        # Timer to refresh images in the GUI
+        self.refresh_timer = QTimer()
+        self.refresh_timer.timeout.connect(self.update_image_labels)
+        self.refresh_timer.start(50)  # ~20 FPS refresh
+
+        self.show()
+
+    # ------------------------------------------------------------------
+    # CompressedImage Subscribers
+    # ------------------------------------------------------------------
+    def normal_image_callback(self, msg):
+        """Decode /camera/image_raw/compressed -> OpenCV RGB."""
+        try:
+            np_arr = np.frombuffer(msg.data, np.uint8)
+            cv_bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if cv_bgr is not None:
+                self.normal_image_cv = cv2.cvtColor(cv_bgr, cv2.COLOR_BGR2RGB)
+        except Exception as e:
+            self.get_logger().error(f"Failed to decode normal image: {e}")
+
+    def detected_image_callback(self, msg):
+        """Decode /aruco_detected_image -> OpenCV RGB."""
+        try:
+            np_arr = np.frombuffer(msg.data, np.uint8)
+            cv_bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if cv_bgr is not None:
+                self.detected_image_cv = cv2.cvtColor(cv_bgr, cv2.COLOR_BGR2RGB)
+        except Exception as e:
+            self.get_logger().error(f"Failed to decode detected image: {e}")
+
+    def update_aruco_distance(self, msg):
+        self.aruco_distance = msg.data
+        self.distance_label.setText(f"Distance: {self.aruco_distance:.2f} m")
+
+    def update_image_labels(self):
+        # Normal image
+        if self.normal_image_cv is not None:
+            h, w, c = self.normal_image_cv.shape
+            bytes_per_line = c * w
+            qt_img = QImage(self.normal_image_cv.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            self.normal_image_label.setPixmap(QPixmap.fromImage(qt_img))
+
+        # Detected image
+        if self.detected_image_cv is not None:
+            h, w, c = self.detected_image_cv.shape
+            bytes_per_line = c * w
+            qt_img = QImage(self.detected_image_cv.data, w, h, bytes_per_line, QImage.Format_RGB888)
+            self.detected_image_label.setPixmap(QPixmap.fromImage(qt_img))
+
+    # ------------------------------------------------------------------
+    # Sliders (including Depth & PWM) with Real-time Labels
+    # ------------------------------------------------------------------
+    def add_slider(self, label_text, layout, row, col, from_, to, default, publish_type="float64", publisher=None):
+        """
+        Creates a slider with a dynamic value label. The 'publish_type' argument controls the logic:
+        - "depth" => Publish depth to self.depth_controller_pub (Float64)
+        - "pwm" => Publish PWM gain to self.pwm_gain_pub (UInt16)
+        - "float64" => Publish Float64 to 'publisher'
+        """
+        # Parameter label
+        param_label = QLabel(label_text)
+        param_label.setStyleSheet("font: bold 12px; background-color: #f0f0f0;")
+        layout.addWidget(param_label, row, col)
+
+        # Numeric value label
+        value_label = QLabel(f"{default:.1f}")
+        value_label.setStyleSheet("font: 12px; background-color: #f0f0f0;")
+
+        # Slider
+        slider = QSlider(Qt.Horizontal)
+        slider.setStyleSheet("background-color: lightblue;")
+        slider.setMinimum(int(from_ * 10))
+        slider.setMaximum(int(to * 10))
+        slider.setValue(int(default * 10))
+        slider.setSingleStep(1)  # step=0.1 in "real" terms
+
+        # Place slider in col+1, numeric label in col+2
+        layout.addWidget(slider, row, col + 1)
+        layout.addWidget(value_label, row, col + 2)
+
+        def on_slider_changed(val):
+            float_val = val / 10.0
+            value_label.setText(f"{float_val:.1f}")
+
+            if publish_type == "depth":
+                # Publish depth as Float64
+                msg = Float64()
+                msg.data = float_val
+                self.depth_controller_pub.publish(msg)
+
+            elif publish_type == "pwm":
+                # Publish PWM as UInt16
+                msg = UInt16()
+                msg.data = int(float_val)
+                self.pwm_gain_pub.publish(msg)
+                self.pwm_gain = msg.data  # store the new pwm value
+
+            elif publish_type == "float64" and publisher is not None:
+                # Generic float64 publisher for PID offsets, etc.
+                msg = Float64()
+                msg.data = float_val
+                publisher.publish(msg)
+                self.get_logger().info(f"Updated {publisher.topic_name} to {float_val}")
+
+        slider.valueChanged.connect(on_slider_changed)
+        
+    # ------------------------------------------------------------------
+    # Button Callbacks
+    # ------------------------------------------------------------------
     def send_movement_command(self, publisher, value):
         msg = UInt16()
         msg.data = value
@@ -254,36 +369,6 @@ class GUIController(Node):
         msg = UInt16()
         msg.data = 1500
         publisher.publish(msg)
-
-    def update_normal_image(self, msg):
-        img = self.decode_image(msg.data)
-        if img is not None:
-            img_tk = ImageTk.PhotoImage(Image.fromarray(img))
-            self.normal_image_canvas.create_image(0, 0, anchor="nw", image=img_tk)
-            self.normal_image_canvas.image = img_tk
-
-    def update_detected_image(self, msg):
-        img = self.decode_image(msg.data)
-        if img is not None:
-            img_tk = ImageTk.PhotoImage(Image.fromarray(img))
-            self.detected_image_canvas.create_image(0, 0, anchor="nw", image=img_tk)
-            self.detected_image_canvas.image = img_tk
-
-    def update_aruco_distance(self, msg):
-        self.aruco_distance = msg.data
-        self.distance_label.config(text=f"Distance: {self.aruco_distance:.2f} m")
-
-    def decode_image(self, img_data):
-        np_arr = np.frombuffer(img_data, np.uint8)
-        img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if img is not None else None
-
-    def update_pwm_gain(self, value):
-        self.pwm_gain = int(value)
-        self.pwm_gain_pub.publish(UInt16(data=self.pwm_gain))
-
-    def update_depth(self, value):
-        self.depth_controller_pub.publish(Float64(data=float(value)))
 
     def arm(self):
         self.arm_pub.publish(Bool(data=True))
@@ -302,27 +387,59 @@ class GUIController(Node):
     def switch_mode(self, mode):
         self.mode_pub.publish(String(data=mode))
 
+    # ------------------------------------------------------------------
+    # Other ROS Callbacks
+    # ------------------------------------------------------------------
     def battery_callback(self, msg):
         self.voltage = round(msg.voltage, 2)
+        self.voltage_label.setText(f"Voltage: {self.voltage} V")
 
     def depth_desired_callback(self, msg):
+        # Depth desired as JSON
         data = json.loads(msg.data)
         self.depth_desired = abs(data['depth_desired'])
+        self.depth_desired_label.setText(f"Target Depth: {self.depth_desired} m")
 
     def callback_bar30(self, msg):
-        self.depth = round((msg.press_abs * 100 - self.p0) / (self.rho * self.g), 2)
+        # approximate depth calculation
+        water_column_pressure = (msg.press_abs * 100) - self.p0
+        depth_m = water_column_pressure / (self.rho * self.g)
+        self.depth = round(depth_m, 2)
+        self.depth_label.setText(f"Depth: {self.depth} m")
 
     def callback_att(self, msg):
         self.roll = round(msg.roll, 3)
         self.pitch = round(msg.pitch, 3)
         self.yaw = round(msg.yaw, 3)
+        self.roll_label.setText(f"Roll: {self.roll}")
+        self.pitch_label.setText(f"Pitch: {self.pitch}")
+        self.yaw_label.setText(f"Yaw: {self.yaw}")
+
+    # ------------------------------------------------------------------
+    # GUI Shutdown Handling
+    # ------------------------------------------------------------------
+    def closeEvent(self, event):
+        self.destroy_node()
+        super().closeEvent(event)
 
 
 def main(args=None):
     rclpy.init(args=args)
+    app = QApplication(sys.argv)
     gui_node = GUIController()
-    gui_node.destroy_node()
-    rclpy.shutdown()
+
+    # Use a QTimer to spin rclpy without blocking the GUI
+    timer = QTimer()
+    timer.timeout.connect(lambda: rclpy.spin_once(gui_node, timeout_sec=0.01))
+    timer.start(10)  # spin at ~100 Hz
+
+    try:
+        app.exec_()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        gui_node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":
