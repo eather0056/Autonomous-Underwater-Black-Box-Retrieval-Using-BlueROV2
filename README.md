@@ -123,6 +123,10 @@ ros2 launch bluerov2_controller last_dance.launch.py
 - Ensure Unity is running the simulated environment.
 - Connect Unity to ROS using the ROS-TCP-Connector.
 
+```bash
+https://github.com/eather0056/Telerobotics-and-HRI-Simulation-Server.git
+```
+
 ### 2. Real-World Testing
 - Connect BlueROV2 and verify camera and MAVROS connectivity.
 - Validate depth and marker detection nodes using:
