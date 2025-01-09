@@ -24,6 +24,10 @@ def generate_launch_description():
         package="bluerov2_controller",
         executable="depth_controller",
     )
+    aruco_node = Node(
+        package="bluerov2_controller",
+        executable="bluerov_aruco_detection",
+    )
 
     yaw_node = Node(
         package="bluerov2_controller",
@@ -49,9 +53,10 @@ def generate_launch_description():
 
     ld.add_action(controller_node)    
     ld.add_action(depth_node)
-    #ld.add_action(yaw_node)
     ld.add_action(video_node)
     ld.add_action(input_node)
     ld.add_action(aruco_alignment_node)
-    #ld.add_action(gui_input_node)
+    ld.add_action(gui_input_node)
+    ld.add_action(aruco_node)
+
     return ld

@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
 from pymavlink import mavutil
@@ -7,6 +8,7 @@ from std_msgs.msg import UInt16, Float64
 from scipy.spatial.transform import Rotation as R
 import math
 import time
+
 
 class BlueROVController(Node):
     def __init__(self):
@@ -21,9 +23,11 @@ class BlueROVController(Node):
         self.marker_detected = False
         self.manual_override = False
 
-        # Track last forward distance and yaw error
+        # Track last forward distance
         self.last_forward_distance = float('inf')
         self.last_yaw_error = 0.0
+        self.forward_offset_hold = False  # State to manage forward offset hold
+        self.offset_timer_start = None
 
         self.get_logger().info("BlueROV Controller Initialized.")
 
@@ -38,13 +42,14 @@ class BlueROVController(Node):
         self.lights = 1100
         self.camera_tilt = 1500
 
+
     def initialize_publishers_and_subscribers(self):
         """Initialize ROS publishers and subscribers."""
         # Publishers
         self.forward_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/forward", 10)
         self.lateral_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/lateral", 10)
         self.yaw_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/yaw", 10)
-        self.gripper_pub = self.create_publisher(UInt16, "/bluerov2/rc/ar/gripper", 10)
+        self.gripper_pub = self.create_publisher(UInt16, "/bluerov2/rc/gripper", 10)
 
         # Subscribers
         self.pose_sub = self.create_subscription(PoseStamped, "/aruco_pose", self.pose_callback, 10)
@@ -55,7 +60,15 @@ class BlueROVController(Node):
         self.create_subscription(Float64, "/settings/yaw/kd", lambda msg: self.update_param("yaw_kd", msg.data), 10)
         self.create_subscription(Float64, "/settings/forward/kp", lambda msg: self.update_param("forward_kp", msg.data), 10)
         self.create_subscription(Float64, "/settings/forward/kd", lambda msg: self.update_param("forward_kd", msg.data), 10)
+        self.create_subscription(Float64, "/settings/lateral/kp", lambda msg: self.update_param("lateral_kp", msg.data), 10)
+        self.create_subscription(Float64, "/settings/lateral/kd", lambda msg: self.update_param("lateral_kd", msg.data), 10)
+        self.create_subscription(Float64, "/settings/throttle/kp", lambda msg: self.update_param("throttle_kp", msg.data), 10)
+        self.create_subscription(Float64, "/settings/throttle/kd", lambda msg: self.update_param("throttle_kd", msg.data), 10)
         self.create_subscription(Float64, "/setings/forward_Offset_correction", lambda msg: self.update_param("forward_Offset_correction", msg.data), 10)
+        self.create_subscription(Float64, "/setings/yaw_Offset_correction", lambda msg: self.update_param("yaw_Offset_correction", msg.data), 10)
+        self.create_subscription(Float64, "/setings/lateral_Offset_correction", lambda msg: self.update_param("lateral_Offset_correction", msg.data), 10)
+        self.create_subscription(Float64, "/setings/forward_gain", lambda msg: self.update_param("forward_pwm_scale", msg.data), 10)
+
 
         # IMU yaw initialization
         self.current_imu_yaw = 0.0
@@ -64,9 +77,16 @@ class BlueROVController(Node):
         """Initialize default parameters."""
         self.yaw_kp = 40
         self.yaw_kd = 20
-        self.forward_kp = 79
+        self.forward_kp = 40
         self.forward_kd = 30
+        self.lateral_kp = 30
+        self.lateral_kd = 5
+        self.throttle_kp = 200
+        self.throttle_kd = 30
         self.forward_Offset_correction = 0.7
+        self.yaw_Offset_correction = 7.1
+        self.lateral_Offset_correction = -0.7
+        self.forward_pwm_scale = 0.2  # Scale factor for forward speed (adjust for low speed)
 
     def update_param(self, param_name, value):
         """Update parameter value dynamically."""
@@ -86,31 +106,62 @@ class BlueROVController(Node):
         self.marker_detected = True
 
         forward_distance = msg.pose.position.z
-        lateral_offset = msg.pose.position.x
-
-        self.last_forward_distance = forward_distance
+        lateral_offset = msg.pose.position.x - self.lateral_Offset_correction
+        lateral_offset_yaw = msg.pose.position.x
+        vertical_offset = -msg.pose.position.y
 
         if not hasattr(self, "yaw_integral_error"):
             self.initialize_pid_errors()
 
+        # Calculate target yaw and yaw error
+        offset_angle = math.radians(self.yaw_Offset_correction)  # Adjust offset to observed error
+        target_yaw = math.atan2(lateral_offset_yaw, forward_distance) - offset_angle
+        yaw_error = self.normalize_angle(target_yaw - self.current_imu_yaw)
+
         # PID control for yaw
-        yaw_error = self.normalize_angle(math.atan2(lateral_offset, forward_distance) - self.current_imu_yaw)
         self.last_yaw_error = yaw_error
         yaw = self.calculate_pid(yaw_error, "yaw", kp=self.yaw_kp, kd=self.yaw_kd, base_pwm=1500)
 
         # Forward PID control
         forward_error = forward_distance - self.forward_Offset_correction
+        self.last_forward_distance = forward_distance
         forward = self.calculate_pid(forward_error, "forward", kp=self.forward_kp, kd=self.forward_kd, base_pwm=1500)
+        forward = int(1500 + (forward - 1500) * self.forward_pwm_scale)  # Scale forward speed
+
+        # Lateral PID control
+        lateral = self.calculate_pid(lateral_offset, "lateral", kp=self.lateral_kp, kd=self.lateral_kd, base_pwm=1500)
+
+        # Vertical PID control
+        throttle = self.calculate_pid(vertical_offset, "vertical", kp=self.throttle_kp, kd=self.throttle_kd, base_pwm=1500)
 
         # Publish control signals
         self.forward_pub.publish(UInt16(data=forward))
+        self.lateral_pub.publish(UInt16(data=lateral))
         self.yaw_pub.publish(UInt16(data=yaw))
 
+        # if forward_distance <= 0.8 and not self.forward_offset_hold:
+        #     self.forward_offset_hold = True
+        #     self.offset_timer_start = time.time()
+        #     self.forward_Offset_correction = 0.3
+        #     self.get_logger().info("Forward offset set to 0.3m for 1 minute")
+
+        # # Timer to reset the offset back to 0
+        # if self.forward_offset_hold:
+        #     elapsed_time = time.time() - self.offset_timer_start
+        #     if elapsed_time >= 40:
+        #         self.forward_Offset_correction = 0.5
+        #         self.forward_offset_hold = False
+        #         self.get_logger().info("Forward offset reset to 0m")
+
         # Open gripper if close enough to the target
-        if forward_distance <= 0.5:
+        if forward_distance <= 0.7:
             self.grab_handle()
 
-        self.get_logger().info(f"Aligning: Forward={forward}, Yaw={yaw}, Distance={forward_distance:.2f}m")
+        # Log debug information
+        self.get_logger().info(
+            f"Aruco Mode: Forward={forward}, Lateral={lateral}, Throttle={throttle}, Yaw={yaw} "
+            f"(Yaw Error={yaw_error:.2f}, Forward Error={forward_error:.2f}, Lateral Error={lateral_offset_yaw:.2f}, Vertical Error={forward_distance:.2f})"
+        )
 
     def calculate_pid(self, error, pid_type, kp, kd, base_pwm):
         """Calculate PID control output."""
@@ -135,6 +186,8 @@ class BlueROVController(Node):
         """Initialize PID error attributes."""
         self.yaw_integral_error = 0.0
         self.forward_integral_error = 0.0
+        self.lateral_integral_error = 0.0
+        self.vertical_integral_error = 0.0
 
     def normalize_angle(self, angle):
         """Normalize angle to [-pi, pi]."""
@@ -147,7 +200,18 @@ class BlueROVController(Node):
     def stop_movement(self):
         """Stop all movements by setting RC values to neutral."""
         self.forward_pub.publish(UInt16(data=1500))
+        self.lateral_pub.publish(UInt16(data=1500))
         self.yaw_pub.publish(UInt16(data=1500))
+
+    # def monitor_marker(self):
+    #     """Monitor marker detection and stop movement if marker is lost."""
+    #     current_time = time.time()
+    #     if current_time - self.last_pose_time > 1.0:  # 1 second timeout
+    #         if self.marker_detected:
+    #             self.get_logger().warning("Marker lost. Stopping movement.")
+    #             self.marker_detected = False
+    #             self.initialize_pid_errors()
+    #             self.stop_movement()
 
     def monitor_marker(self):
         """Monitor marker detection and stop movement if marker is lost."""
@@ -161,16 +225,18 @@ class BlueROVController(Node):
 
     def approach_target(self):
         """Approach the target when marker is lost."""
-        if self.last_forward_distance < 0.4:  # Only move forward if within a safe range
-            self.forward_pub.publish(UInt16(data=1600))
-            self.yaw_pub.publish(UInt16(data=self.calculate_pid(self.last_yaw_error, "yaw", kp=self.yaw_kp, kd=self.yaw_kd, base_pwm=1500)))
-            self.get_logger().info("Approaching target in manual mode with yaw holding.")
+        if self.last_forward_distance < 0.6:  # Only move forward if within a safe range
+            self.forward_pub.publish(UInt16(data=1530))
+            #self.yaw_pub.publish(UInt16(data=self.calculate_pid(self.last_yaw_error, "yaw", kp=self.yaw_kp, kd=self.yaw_kd, base_pwm=1500)))
+            self.get_logger().info("Approaching target in blind mode with yaw holding.")
         else:
             self.get_logger().info("Target too far for safe approach. Holding position.")
+            self.initialize_pid_errors()
+            self.stop_movement()
 
     def grab_handle(self):
         """Activate the gripper to grab the handle."""
-        self.gripper_pub.publish(UInt16(data=1900))
+        self.gripper_pub.publish(UInt16(data=1580))
         self.get_logger().info("Gripper activated.")
 
 

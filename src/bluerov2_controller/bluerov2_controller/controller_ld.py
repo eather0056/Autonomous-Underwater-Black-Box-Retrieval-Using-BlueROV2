@@ -51,7 +51,7 @@ class Controller(Node):
         self.aruco_forward_sub  = self.create_subscription(UInt16, "/bluerov2/rc/ar/forward", lambda msg: self.rc_callback(msg, 11), 10)
         self.aruco_lateral_sub  = self.create_subscription(UInt16, "/bluerov2/rc/ar/lateral", lambda msg: self.rc_callback(msg, 12), 10)
         self.aruco_yaw_sub      = self.create_subscription(UInt16, "/bluerov2/rc/ar/yaw", lambda msg: self.rc_callback(msg, 13), 10)
-        # self.aruco_gripper_sub      = self.create_subscription(UInt16, "/bluerov2/rc/ar/gripper", lambda msg: self.rc_callback(msg, 14), 10)
+        self.aruco_gripper_sub      = self.create_subscription(UInt16, "/bluerov2/rc/ar/gripper", lambda msg: self.rc_callback(msg, 14), 10)
 
         self.arm_sub            = self.create_subscription(Bool, "/bluerov2/arm", self.arm_callback, 10)
 

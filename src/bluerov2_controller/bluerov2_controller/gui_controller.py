@@ -79,6 +79,7 @@ class GUIController(Node, QMainWindow):
         self.throttle_kp_pub = self.create_publisher(Float64, "/settings/throttle/kp", 10)
         self.throttle_kd_pub = self.create_publisher(Float64, "/settings/throttle/kd", 10)
         self.forward_offset_pub = self.create_publisher(Float64, "/setings/forward_Offset_correction", 10)
+        self.forward_gain_pub = self.create_publisher(Float64, "/setings/forward_gain", 10)
         self.yaw_offset_pub = self.create_publisher(Float64, "/setings/yaw_Offset_correction", 10)
         self.lateral_offset_pub = self.create_publisher(Float64, "/setings/lateral_Offset_correction", 10)
 
@@ -171,17 +172,18 @@ class GUIController(Node, QMainWindow):
         )
 
         # The rest of the PID / offset sliders
-        self.add_slider("Yaw KP", control_frame_layout, row=0, col=0, from_=0.0, to=100.0, default=40.0, publish_type="float64", publisher=self.yaw_kp_pub)
-        self.add_slider("Yaw KD", control_frame_layout, row=0, col=3, from_=0.0, to=50.0, default=20.0, publish_type="float64", publisher=self.yaw_kd_pub)
+        self.add_slider("Yaw KP", control_frame_layout, row=0, col=0, from_=0.0, to=100.0, default=18.1, publish_type="float64", publisher=self.yaw_kp_pub)
+        self.add_slider("Yaw KD", control_frame_layout, row=0, col=3, from_=0.0, to=50.0, default=8.1, publish_type="float64", publisher=self.yaw_kd_pub)
         self.add_slider("Forward KP", control_frame_layout, row=1, col=0, from_=0.0, to=100.0, default=79.0, publish_type="float64", publisher=self.forward_kp_pub)
         self.add_slider("Forward KD", control_frame_layout, row=1, col=3, from_=0.0, to=50.0, default=30.0, publish_type="float64", publisher=self.forward_kd_pub)
         self.add_slider("Lateral KP", control_frame_layout, row=2, col=0, from_=0.0, to=50.0, default=30.0, publish_type="float64", publisher=self.lateral_kp_pub)
         self.add_slider("Lateral KD", control_frame_layout, row=2, col=3, from_=0.0, to=50.0, default=5.0, publish_type="float64", publisher=self.lateral_kd_pub)
         self.add_slider("Throttle KP", control_frame_layout, row=3, col=0, from_=0.0, to=300.0, default=200.0, publish_type="float64", publisher=self.throttle_kp_pub)
         self.add_slider("Throttle KD", control_frame_layout, row=3, col=3, from_=0.0, to=100.0, default=30.0, publish_type="float64", publisher=self.throttle_kd_pub)
-        self.add_slider("Forward Offset", control_frame_layout, row=4, col=0, from_=0.0, to=2.0, default=0.7, publish_type="float64", publisher=self.forward_offset_pub)
-        self.add_slider("Yaw Offset", control_frame_layout, row=4, col=3, from_=-20.0, to=20.0, default=-10.0, publish_type="float64", publisher=self.yaw_offset_pub)
-        self.add_slider("Lateral Offset", control_frame_layout, row=5, col=0, from_=-2.0, to=2.0, default=0.4, publish_type="float64", publisher=self.lateral_offset_pub)
+        self.add_slider("Forward Offset", control_frame_layout, row=4, col=0, from_=0.0, to=2.0, default=0.0, publish_type="float64", publisher=self.forward_offset_pub)
+        self.add_slider("Yaw Offset", control_frame_layout, row=4, col=3, from_=-20.0, to=20.0, default=0.0, publish_type="float64", publisher=self.yaw_offset_pub)
+        self.add_slider("Lateral Offset", control_frame_layout, row=5, col=0, from_=-2.0, to=2.0, default=0.0, publish_type="float64", publisher=self.lateral_offset_pub)
+        self.add_slider("Forward Gain", control_frame_layout, row=5, col=3, from_=0.0, to=2.0, default=0.9, publish_type="float64", publisher=self.forward_gain_pub)
 
         # -------------------- Movement & Action Buttons --------------------
         movement_buttons = [
