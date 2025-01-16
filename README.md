@@ -133,6 +133,14 @@ https://github.com/eather0056/Telerobotics-and-HRI-Simulation-Server.git
 ```bash
 ros2 topic echo /aruco_pose
 ```
+## Project Demo
+
+[![Watch the demo on YouTube](assets/demo-thumbnail.png)](https://youtube.com/shorts/35pSupqHFNI?feature=share)
+
+[![Watch the demo on YouTube](assets/demo-thumbnail.png)](https://youtu.be/mVpci4n3xCk)
+
+[![Watch the demo on YouTube](assets/demo-thumbnail.png)](https://youtu.be/t4nXIaApkf0)
+
 
 ---
 
